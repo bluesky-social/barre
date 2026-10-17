@@ -576,6 +576,7 @@ fn measure_node_with_measure_func<'a, N: LayoutNode<'a>>(
         );
 
         layout_marker_data.measure_callbacks += 1;
+        crate::stat!(|s| s.measure_callbacks += 1);
         layout_marker_data.measure_callback_reasons_count[reason as usize] += 1;
 
         node.set_layout_measured_dimension(
@@ -2066,6 +2067,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
     depth: u32,
     generation_count: u32,
 ) {
+    crate::stat!(|s| s.impl_calls += 1);
     assert!(
         !is_undefined(available_width) || width_sizing_mode == SizingMode::MaxContent,
         "availableWidth is indefinite so widthSizingMode must be SizingMode::MaxContent"
@@ -3301,6 +3303,21 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                     replay_pending: false,
                     ..pending
                 });
+                crate::stat!(|s| {
+                    fn subtree_retainable<'a, N: LayoutNode<'a>>(n: N) -> bool {
+                        !n.has_measure_func()
+                            && (has_retainable_flex_basis_child(n)
+                                || n.layout_children().any(subtree_retainable))
+                    }
+                    if subtree_retainable(node) {
+                        s.replays_retainable += 1;
+                    }
+                    if has_retainable_flex_basis_child(node) {
+                        s.replays_direct_retainable += 1;
+                    }
+                    s.replays += 1;
+                    s.nodes.entry(crate::stats::node_id(layout)).or_default().replays += 1;
+                });
                 calculate_layout_impl(
                     node,
                     pending.available_width,
@@ -3340,6 +3357,31 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
 
         layout.last_owner_direction.set(owner_direction);
         layout.config_version.set(node.config().version());
+
+        crate::stat!(|s| {
+            let (w, h) = (
+                layout.measured_dimension(Dimension::Width),
+                layout.measured_dimension(Dimension::Height),
+            );
+            let entries = layout.cached_measurements[..layout.next_cached_measurements_index.get() as usize]
+                .iter()
+                .map(|e| e.get())
+                .chain(std::iter::once(layout.cached_layout.get()));
+            let mut seen = false;
+            let mut same_gen = false;
+            for e in entries {
+                if e.computed_width.to_bits() == w.to_bits() && e.computed_height.to_bits() == h.to_bits() {
+                    seen = true;
+                    same_gen |= e.generation == generation_count;
+                }
+            }
+            if seen && !perform_layout {
+                s.measure_run_result_seen += 1;
+            }
+            if same_gen {
+                s.run_equal_to_existing += 1;
+            }
+        });
 
         let new_entry = CachedMeasurement {
             available_width,
@@ -3401,6 +3443,35 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         node.set_dirty(false);
     }
 
+    crate::stat!(|s| {
+        use crate::stats::Outcome;
+        let outcome = if need_to_visit_node {
+            Outcome::Visit
+        } else if rejected.is_some() {
+            Outcome::Rejected
+        } else if let Some(cached) = cached_results {
+            if cached_entry(layout, cached).generation == generation_count {
+                Outcome::HitSameGen
+            } else {
+                Outcome::HitEarlierGen
+            }
+        } else {
+            Outcome::Miss
+        };
+        *s.calls.entry((perform_layout, reason as u8, outcome)).or_default() += 1;
+        let ns = s.nodes.entry(crate::stats::node_id(layout)).or_default();
+        ns.calls += 1;
+        ns.has_measure_func = node.has_measure_func();
+        if !matches!(outcome, Outcome::HitSameGen | Outcome::HitEarlierGen) {
+            ns.runs += 1;
+            if perform_layout {
+                ns.layout_runs += 1;
+            } else {
+                ns.measure_runs += 1;
+            }
+        }
+    });
+
     layout.generation_count.set(generation_count);
 
     need_to_visit_node || cached_results.is_none()
@@ -3414,6 +3485,8 @@ pub fn calculate_layout<'a, N: LayoutNode<'a>>(
     owner_direction: Direction,
 ) {
     let mut marker_data = LayoutData::default();
+    #[cfg(feature = "stats")]
+    crate::stats::begin_layout();
 
     // Increment the generation count. This will force the recursive routine
     // to visit all dirty nodes at least once. Subsequent visits will be
@@ -3504,4 +3577,6 @@ pub fn calculate_layout<'a, N: LayoutNode<'a>>(
         node.set_position(node.layout().direction(), owner_width, owner_height);
         round_layout_results_to_pixel_grid(node, 0.0, 0.0);
     }
+    #[cfg(feature = "stats")]
+    crate::stats::end_layout();
 }
