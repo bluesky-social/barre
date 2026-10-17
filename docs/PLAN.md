@@ -102,7 +102,11 @@ measure functions and the measure cache, dirty marking, intrinsic sizing.
    profile, optimise. The ratchet keeps it honest.
 5. **React Native**: RN's Fabric renderer uses Yoga's C++ internals
    (`yoga::Node`, `yoga::Style` in `YogaLayoutableShadowNode` and
-   `YogaStylableProps`), not just the C API. The shim is a replacement for
-   `ReactCommon/yoga` that keeps Yoga's style/value headers (plain data) and
-   replaces the node and the algorithm with barre over FFI. Wired into
-   bluesky-social/social-app via a patch, tested and profiled with argent.
+   `YogaStylableProps`), not just the C API. Per docs/RN-SHIM.md, the shim
+   keeps Yoga's C++ `Node`/`Style`/`Config` and the C API, and replaces only
+   `yoga::calculateLayout` with barre (a `barre-rn` staticlib walking the C++
+   nodes through a host interface, its cache stored as a POD blob in the
+   node). So the algorithm must be generic over node access, and per-node
+   persistent layout state must be `Copy`, fixed-size and pointer-free.
+   Wired into bluesky-social/social-app via a patch, A/B against Yoga at
+   launch, tested and profiled with argent.
