@@ -236,6 +236,27 @@ passed the gates and both verifiers and merged with +65 passes.)
 no engine (spec lookups, lint rules, result normalisation, ticket parsing, the
 usage-limit policy, the red-team cases).
 
+### Perf tickets: gate the number in `check`
+
+The verifier judges honesty and fidelity to the Yoga source, not speed: an
+honest change that doesn't move the needle can be accepted (T-0011's first
+attempt was). So a ticket whose point is a speedup must assert it
+mechanically in `check`, with the same shape as T-0011:
+
+1. a command that runs the benchmark (`bench/run --quick NAME`), and
+2. a command that reads the newest `bench/results/*.json` and exits non-zero
+   unless barre's checksum equals Yoga's (and the measure and new-layout
+   counters match) **and** barre's median over Yoga's is below a threshold.
+   Set the threshold at the least improvement worth merging, not at the
+   target; name the target in the ticket text.
+
+Workers' sandboxes can't run `bench/run` or `bench/profile` (confirmed live),
+so they reason blind between gate reports. Tickets that need profiling are
+`tier = "architect"` and are done by an architect agent in its own worktree;
+the swarm gets only those whose fix can be found by reading. Check the
+numbers on a quiet machine: the threshold is a ratio, but a loaded host
+still adds noise.
+
 ## Policy (`harness/orch/policy.py`)
 
 Protected paths no ticket can open: `vendor/`, `harness/`, `conformance/`,

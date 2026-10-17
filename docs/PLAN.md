@@ -81,8 +81,10 @@ The harness in `harness/orch` is kahvi's, adapted (docs/HARNESS.md):
 tickets in `tickets/`, cheap workers (Haiku, escalating to Sonnet then Opus),
 mechanical gates (scope, lint, build, clippy, the ticket's conformance target
 with no regressions and at least one new pass), a blind verifier, and a serial
-merge bot that runs the full suite against the ratchet. Locally only for now
-(no GitHub stack).
+merge bot that runs the full suite against the ratchet. Accepted work lands as
+stacked PRs on GitHub, where CI runs the full suite and Samuel merges from the
+bottom (docs/STACKS.md); the local merge bot is the fallback when
+`[stack] repo` is unset.
 
 Ticket breakdown follows the algorithm's seams, with the generated test files
 as targets: absolute positioning (`YGAbsolutePositionTest`,
