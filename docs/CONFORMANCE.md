@@ -65,7 +65,8 @@ Output:
 - `--show N`: the first N non-passing tests with their reason and output tail.
 - `--by-file`: per-file table (pass/fail/crash/timeout/build-fail/skip).
 - `--json F`: `{"<id>": {"status": S, "reason": R}}` for every selected test,
-  with S one of `pass`, `fail`, `crash`, `timeout`, `build-fail`, `skip`.
+  with S one of `pass`, `fail`, `crash`, `timeout`, `build-fail`, `skip`
+  (and, with `--yoga` only, `xfail`/`xpass`: see "Yoga divergences" below).
   R is empty for a pass, and otherwise one line:
   - `not implemented: <name>` whenever the output contains barre's
     `not_implemented!` panic message (`not implemented: <name>`, the rest of
@@ -98,7 +99,8 @@ Output:
   regressions (the regressed IDs drop out), so a caller that rejects the run
   must discard the file.
 
-Exit codes: `0` ok; `1` regressions against `--baseline`; `2` error (cargo
+Exit codes: `0` ok; `1` regressions against `--baseline`, or (with `--yoga`)
+an `xpass`; `2` error (cargo
 build of barre-ffi failed, googletest or the runner's own objects failed to
 build, bad arguments, missing vendor checkout); `3` invalid run (a canary
 passed, or the symbol check failed). A test file that fails to build is not an
@@ -213,10 +215,13 @@ Policy: a test is in scope iff it exercises the public C ABI
   would pass vacuously (`FloatOptionalTest`, `GridStyleTest`, `OrdinalsTest`,
   `SmallValueBufferTest`, `StyleValuePoolTest`, `YGValueTest`).
 
-That is 16 files, 107 tests; 752 tests in 54 files are in scope.
-`YGConfigTest` also contains C-API-only tests (logger reset, negative point
-scale factor throwing `std::logic_error`); they are lost with the file and
-should be ported to `conformance/tests/`.
+That is 16 files, 107 tests; 752 tests in 54 files are in scope, plus
+barre's own tests in `conformance/tests/`.
+
+What these files test through the C API is ported to `conformance/tests/`
+under the same file and test names (`barre/YGConfigTest/...`,
+`barre/YGPersistenceTest/...`, ...); each port names the Yoga file and commit
+it came from, and says where it had to rewrite internals-only setup.
 
 ## The ratchet: `conformance/expected-pass.txt`
 
@@ -224,7 +229,28 @@ Sorted, one ID per line: every test that passes on main. A change may never
 lose one (`--baseline`), and the merge bot rewrites it
 (`--update-expected`) after a full run.
 
+## Yoga divergences: `conformance/yoga-divergences.txt`
+
+Some of barre's own tests assert behaviour where Yoga is wrong (Yoga bugs
+barre fixes, e.g. yoga#1552, yoga#2019), so they fail on real Yoga by design.
+They are documented in `conformance/divergences.md` and listed, one exact test
+ID per line with a reason (`<test ID>  <reason>`, as in `skip.txt`), in
+`conformance/yoga-divergences.txt`. Only `--yoga` reads it:
+
+- a listed test that fails, crashes or times out is reported as `xfail` and
+  does not count against the pass rate (`... 100.0% of 798 + 11 xfail in
+  scope pass`);
+- a listed test that passes is `xpass`: printed as `UNEXPECTED PASS on Yoga`
+  and the exit code is 1 (the test no longer demonstrates the bug, or Yoga
+  fixed it);
+- a listed ID that matches the filters but did not run is warned about.
+
+Against barre the file has no effect: these are ordinary tests (and in the
+ratchet once barre passes them).
+
 ## Validating the runner
 
-`./conf --yoga` must pass everything in scope (it does: 752/752 at the pin;
-with `--no-skip`, 859/859). Re-run it after changing `harness/conf`.
+`./conf --yoga` must pass everything in scope except the documented Yoga
+divergences, which must all be `xfail` (at the pin: 798 pass + 11 xfail, exit
+0; with `--no-skip`, also the 107 skipped tests pass). Re-run it after
+changing `harness/conf`.

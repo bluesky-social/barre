@@ -43,6 +43,9 @@ HARNESS = Path(__file__).resolve().parent
 CONF_DIR = RUNNER_ROOT / "conformance"
 
 STATUSES = ["pass", "fail", "crash", "timeout", "build-fail", "skip"]
+# --yoga only: tests in conformance/yoga-divergences.txt (documented Yoga bugs
+# that barre fixes) are expected to fail on Yoga.
+YOGA_STATUSES = ["xfail", "xpass"]
 MEM_EXIT_CODE = 97
 OUTPUT_KEEP = 4000
 
@@ -154,6 +157,40 @@ def load_skips():
             raise ConfError(f"conformance/skip.txt:{n}: entry without a reason: {line}")
         out.append((parts[0], parts[1].strip()))
     return out
+
+
+def load_yoga_divergences():
+    """{test id: reason} from conformance/yoga-divergences.txt: '<test id>  <reason>'."""
+    path = CONF_DIR / "yoga-divergences.txt"
+    out = {}
+    if not path.exists():
+        return out
+    for n, line in enumerate(path.read_text().splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            raise ConfError(f"conformance/yoga-divergences.txt:{n}: entry without a reason: {line}")
+        out[parts[0]] = parts[1].strip()
+    return out
+
+
+def apply_yoga_divergences(results, filters):
+    """--yoga: a listed test that fails/crashes/times out is xfail, one that passes is xpass.
+    Returns the listed IDs that match the filters but did not run (stale entries)."""
+    stale = []
+    for tid, why in load_yoga_divergences().items():
+        if tid not in results:
+            if id_matches(tid, filters):
+                stale.append(tid)
+            continue
+        st, reason, out = results[tid]
+        if st in ("fail", "crash", "timeout"):
+            results[tid] = ("xfail", f"Yoga divergence ({why}); {st}: {reason}", out)
+        elif st == "pass":
+            results[tid] = ("xpass", f"passes on Yoga but is listed in conformance/yoga-divergences.txt ({why})", out)
+    return stale
 
 
 def id_matches(test_id: str, prefixes) -> bool:
@@ -841,16 +878,21 @@ def run(args, t0):
         if lock_fd is not None:
             os.close(lock_fd)
 
-    return report(args, results, file_of, invalid, canary_results, variant, time.monotonic() - t0, run_s)
+    stale_divergences = apply_yoga_divergences(results, filters) if args.yoga else []
+    return report(args, results, file_of, invalid, canary_results, variant, time.monotonic() - t0, run_s,
+                  stale_divergences)
 
 
-def report(args, results, file_of, invalid, canary_results, variant, elapsed, run_s):
-    counts = {s: 0 for s in STATUSES}
+def report(args, results, file_of, invalid, canary_results, variant, elapsed, run_s, stale_divergences=()):
+    statuses = STATUSES + (YOGA_STATUSES if args.yoga else [])
+    counts = {s: 0 for s in statuses}
     for st, _, _ in results.values():
         counts[st] += 1
     total = len(results)
     in_scope = total - counts["skip"]
-    rate = 100.0 * counts["pass"] / in_scope if in_scope else 0.0
+    # with --yoga, documented Yoga bugs (xfail) don't count against the pass rate
+    expected = in_scope - counts.get("xfail", 0)
+    rate = 100.0 * counts["pass"] / expected if expected else 0.0
     not_impl = {}
     for st, reason, _ in results.values():
         if reason.startswith("not implemented: "):
@@ -896,7 +938,7 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
         shown = 0
         for tid in sorted(results):
             st, reason, text = results[tid]
-            if st in ("pass", "skip"):
+            if st in ("pass", "skip", "xfail"):
                 continue
             if shown >= args.show:
                 break
@@ -915,17 +957,21 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
     if args.by_file:
         rows = {}
         for tid, (st, _, _) in results.items():
-            rows.setdefault(file_of.get(tid, tid.rsplit("/", 1)[0]), {s: 0 for s in STATUSES})[st] += 1
+            rows.setdefault(file_of.get(tid, tid.rsplit("/", 1)[0]), {s: 0 for s in statuses})[st] += 1
         w = max([len(k) for k in rows] + [4])
-        hdr = f"{'file':<{w}}  {'pass':>5} {'fail':>5} {'crash':>5} {'tmout':>5} {'bfail':>5} {'skip':>5} {'total':>5}"
+        extra = "".join(f" {s:>5}" for s in statuses[len(STATUSES):])
+        hdr = (f"{'file':<{w}}  {'pass':>5} {'fail':>5} {'crash':>5} {'tmout':>5} {'bfail':>5} {'skip':>5}"
+               f"{extra} {'total':>5}")
         print(hdr, file=out)
         for k in sorted(rows):
             r = rows[k]
+            extra = "".join(f" {r[s]:>5}" for s in statuses[len(STATUSES):])
             print(f"{k:<{w}}  {r['pass']:>5} {r['fail']:>5} {r['crash']:>5} {r['timeout']:>5} "
-                  f"{r['build-fail']:>5} {r['skip']:>5} {sum(r.values()):>5}", file=out)
-    parts = [f"{counts[s]} {s}" for s in STATUSES if counts[s] or s == "pass"]
+                  f"{r['build-fail']:>5} {r['skip']:>5}{extra} {sum(r.values()):>5}", file=out)
+    parts = [f"{counts[s]} {s}" for s in statuses if counts[s] or s == "pass"]
+    xfail_note = f" + {counts['xfail']} xfail" if counts.get("xfail") else ""
     print(f"conf [{variant}]: {total} tests: {', '.join(parts)}; "
-          f"{rate:.1f}% of {in_scope} in scope pass ({elapsed:.1f}s, tests {run_s:.1f}s)", file=out)
+          f"{rate:.1f}% of {expected}{xfail_note} in scope pass ({elapsed:.1f}s, tests {run_s:.1f}s)", file=out)
     if not_impl:
         top = ", ".join(f"{n} ({c})" for n, c in list(summary["not_implemented"].items())[:8])
         print(f"not implemented: {top}", file=out)
@@ -938,6 +984,12 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
             print(f"  VANISHED {tid}: {st}", file=out)
         if len(regressions) > 30:
             print(f"  ... and {len(regressions) - 30} more", file=out)
+    xpass = sorted(t for t, r in results.items() if r[0] == "xpass")
+    for tid in xpass:
+        print(f"conf: UNEXPECTED PASS on Yoga: {tid} is listed in conformance/yoga-divergences.txt "
+              f"as a Yoga bug, but passes (fix the test, or drop the entry if Yoga fixed the bug)", file=out)
+    for tid in stale_divergences:
+        print(f"conf: warning: conformance/yoga-divergences.txt lists {tid}, which did not run", file=out)
     if not valid:
         print("conf: RUN INVALID:", file=out)
         for r in invalid:
@@ -956,7 +1008,7 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
                 header.append(line + "\n")
         baseline_path.write_text("".join(header) + "".join(t + "\n" for t in new))
         print(f"wrote {baseline_path} ({len(new)} tests)", file=out)
-    return EXIT_REGRESSION if regressions else EXIT_OK
+    return EXIT_REGRESSION if regressions or xpass else EXIT_OK
 
 
 if __name__ == "__main__":

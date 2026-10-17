@@ -1,0 +1,22 @@
+# Tests that fail on real Yoga by design: they assert behaviour where Yoga is
+# wrong (a documented Yoga bug that barre fixes). Format, as in skip.txt:
+#   <test ID>  <reason>
+# Exact test IDs, not prefixes. `./conf --yoga` reports a listed test that
+# fails as "xfail", and one that passes as "xpass" (exit 1: the test no longer
+# demonstrates the bug, or Yoga fixed it). Has no effect without --yoga.
+# Details for each entry: conformance/divergences.md.
+#
+# yoga#2019: stale computedFlexBasis reused across layouts
+barre/YGStaleFlexBasisTest/YGStaleFlexBasisTest.rotate_and_back_scrollview_two_wrappers  yoga#2019: flex: 1 text keeps its landscape height (60, not 100) after rotating back
+barre/YGStaleFlexBasisTest/YGStaleFlexBasisTest.rotate_and_back_scrollview_three_wrappers  yoga#2019: flex: 1 text keeps its landscape height (60, not 100) after rotating back
+#
+# yoga#1552: resolved (percent) flex basis not recomputed when the parent's size changes
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.percent_flex_basis_recomputed_when_parent_height_changes  yoga#1552: 25% flex basis keeps 250 after the parent grows from 1000 to 1200
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.flex_basis_100_percent_after_rotation  yoga#1552: flexBasis 100% keeps the landscape height (400, not 800) after rotating to portrait
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_percent_flex_basis_column  yoga#1552: relayout keeps percent flex bases resolved against the previous size
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_percent_flex_basis_row  yoga#1552: relayout keeps percent flex bases resolved against the previous size
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_flex_grow_shrink  yoga#1552: relayout keeps a basis from a percent width resolved against the previous size
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_wrap  yoga#1552: relayout keeps percent flex bases resolved against the previous size
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_nested  yoga#1552: relayout keeps percent flex bases resolved against the previous size
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_min_max_percent  yoga#1552: relayout keeps percent flex bases resolved against the previous size
+barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_measure_funcs  yoga#1552: relayout keeps percent flex bases resolved against the previous size
