@@ -110,3 +110,12 @@ measure functions and the measure cache, dirty marking, intrinsic sizing.
    persistent layout state must be `Copy`, fixed-size and pointer-free.
    Wired into bluesky-social/social-app via a patch, A/B against Yoga at
    launch, tested and profiled with argent.
+
+## Decisions log
+
+- **2026-10-17, FMA:** barre does not mirror clang's floating-point contraction
+  (`a*b+c` fused into FMA, on by default on arm64). Contraction is compiler- and
+  target-dependent, is the root cause of yoga#2038, and turning it off in Yoga
+  makes every benchmark checksum match barre. Consequence: against RN's Yoga,
+  rare one-pixel differences on text leaves in deep trees are expected and
+  accepted (docs/BENCH.md).

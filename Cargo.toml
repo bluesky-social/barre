@@ -31,3 +31,9 @@ panic = "unwind"
 [profile.release]
 panic = "unwind"
 debug = 1
+
+# Shipping builds (RN shim, benchmarks): fat LTO, one codegen unit.
+[profile.release-lto]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
