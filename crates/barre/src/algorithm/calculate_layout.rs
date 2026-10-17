@@ -1259,8 +1259,16 @@ fn bound_axis_with_auto_min<'a, N: LayoutNode<'a>>(
 /// flexible items and ensures that the size of the flex items abide the min
 /// and max constraints. At the end of this function the child nodes have
 /// their proper size. `distribute_free_space_first_pass` must run first.
+///
+/// Deliberately differs from Yoga (yoga#2035): each item's share is added to
+/// its CSS 9.7 start size (`start_sizes`, the unclamped flex basis unless the
+/// item was frozen up front) instead of its min/max-clamped flex basis, and
+/// items frozen up front (`frozen`) keep their clamped size. An item no
+/// branch applies to also keeps its clamped size, as in Yoga.
 fn distribute_free_space_second_pass<'a, N: LayoutNode<'a>>(
     flex_line: &mut FlexLine<N>,
+    start_sizes: &[f32],
+    frozen: &[bool],
     node: N,
     main_axis: FlexDirection,
     cross_axis: FlexDirection,
@@ -1282,8 +1290,11 @@ fn distribute_free_space_second_pass<'a, N: LayoutNode<'a>>(
     let is_main_axis_row = is_row(main_axis);
     let is_node_flex_wrap = node.style().flex_wrap() != Wrap::NoWrap;
 
-    for &current_line_child in &flex_line.items_in_flow {
-        let child_flex_basis = bound_axis_within_min_and_max(
+    for (i, &current_line_child) in flex_line.items_in_flow.iter().enumerate() {
+        // Deliberate divergence from Yoga (yoga#2035): distribution starts
+        // from the item's CSS 9.7 start size, not its clamped flex basis.
+        let child_flex_basis = start_sizes[i];
+        let mut updated_main_size = bound_axis_within_min_and_max(
             current_line_child,
             direction,
             main_axis,
@@ -1291,10 +1302,11 @@ fn distribute_free_space_second_pass<'a, N: LayoutNode<'a>>(
             main_axis_owner_size,
             owner_width,
         );
-        let mut updated_main_size = child_flex_basis;
 
         let remaining_free_space = flex_line.layout.remaining_free_space;
-        if is_defined(remaining_free_space) && remaining_free_space < 0.0 {
+        if frozen[i] {
+            // Frozen up front at its hypothetical (clamped) size.
+        } else if is_defined(remaining_free_space) && remaining_free_space < 0.0 {
             let flex_shrink_scaled_factor =
                 -current_line_child.resolve_flex_shrink() * child_flex_basis;
             // Is this child able to shrink?
@@ -1480,13 +1492,19 @@ fn distribute_free_space_second_pass<'a, N: LayoutNode<'a>>(
 /// flexible items. For those flexible items whose min and max constraints
 /// are triggered, that flex item's clamped size is removed from the
 /// remainingFreeSpace.
+///
+/// Deliberately differs from Yoga (yoga#2035): each item's tentative size is
+/// its CSS 9.7 start size (`start_sizes`, the unclamped flex basis unless the
+/// item was frozen up front) plus its share, rather than its min/max-clamped
+/// flex basis plus its share, and items frozen up front (`frozen`) are
+/// skipped, as their factors are already out of the totals.
 fn distribute_free_space_first_pass<'a, N: LayoutNode<'a>>(
     node: N,
     flex_line: &mut FlexLine<N>,
+    start_sizes: &[f32],
+    frozen: &[bool],
     direction: Direction,
     main_axis: FlexDirection,
-    owner_width: f32,
-    main_axis_owner_size: f32,
     available_inner_main_dim: f32,
     available_inner_width: f32,
 ) {
@@ -1508,15 +1526,13 @@ fn distribute_free_space_first_pass<'a, N: LayoutNode<'a>>(
     let original_total_flex_shrink_scaled_factors =
         flex_line.layout.total_flex_shrink_scaled_factors;
 
-    for &current_line_child in &flex_line.items_in_flow {
-        let child_flex_basis = bound_axis_within_min_and_max(
-            current_line_child,
-            direction,
-            main_axis,
-            current_line_child.layout().computed_flex_basis.get(),
-            main_axis_owner_size,
-            owner_width,
-        );
+    for (i, &current_line_child) in flex_line.items_in_flow.iter().enumerate() {
+        // Deliberate divergence from Yoga (yoga#2035): start from the CSS 9.7
+        // start size; items frozen up front take no part in this pass.
+        if frozen[i] {
+            continue;
+        }
+        let child_flex_basis = start_sizes[i];
 
         if flex_line.layout.remaining_free_space < 0.0 {
             let flex_shrink_scaled_factor =
@@ -1612,6 +1628,11 @@ fn distribute_free_space_first_pass<'a, N: LayoutNode<'a>>(
 /// the spec (<https://www.w3.org/TR/CSS-flexbox-1/#resolve-flexible-lengths>),
 /// which describes a process that needs to be repeated a variable number of
 /// times.
+///
+/// Deliberately differs from Yoga (yoga#2035): before the two passes, items
+/// are frozen up front and the initial free space is recomputed from the
+/// unclamped flex base sizes, per CSS 9.7 steps 1-4 (see the comment in the
+/// body), since Yoga computes it from the min/max-clamped bases.
 fn resolve_flexible_length<'a, N: LayoutNode<'a>>(
     node: N,
     flex_line: &mut FlexLine<N>,
@@ -1657,14 +1678,68 @@ fn resolve_flexible_length<'a, N: LayoutNode<'a>>(
         }
     }
 
+    // Deliberate divergence from Yoga (yoga#2035), CSS Flexbox 9.7 steps 1-4.
+    // The flex factor in use comes from the hypothetical (clamped) sizes,
+    // i.e. the free space calculateFlexLine's sizeConsumed gives: grow if it
+    // is positive, shrink otherwise. Items with a zero factor, or whose
+    // clamping goes against that direction (a max lowering a growing item, a
+    // min raising a shrinking one) are frozen at their clamped size and their
+    // factors removed from the totals. Every other item starts from its
+    // unclamped flex base size, and the initial free space is recomputed from
+    // those start sizes. When the free space is undefined nothing is
+    // distributed, and items start from their clamped size as in Yoga.
+    let mut start_sizes = Vec::with_capacity(flex_line.items_in_flow.len());
+    let mut frozen = Vec::with_capacity(flex_line.items_in_flow.len());
+    let mut free_space_correction = 0.0f32;
+    for &current_line_child in &flex_line.items_in_flow {
+        let flex_basis = current_line_child.layout().computed_flex_basis.get();
+        let clamped = bound_axis_within_min_and_max(
+            current_line_child,
+            direction,
+            main_axis,
+            flex_basis,
+            main_axis_owner_size,
+            owner_width,
+        );
+        if !is_defined(original_free_space) {
+            start_sizes.push(clamped);
+            frozen.push(false);
+            continue;
+        }
+        let growing = original_free_space > 0.0;
+        let freeze = if growing {
+            current_line_child.resolve_flex_grow() == 0.0 || flex_basis > clamped
+        } else {
+            current_line_child.resolve_flex_shrink() == 0.0 || flex_basis < clamped
+        };
+        if freeze {
+            if current_line_child.is_node_flexible() {
+                if growing {
+                    flex_line.layout.total_flex_grow_factors -=
+                        current_line_child.resolve_flex_grow();
+                } else {
+                    flex_line.layout.total_flex_shrink_scaled_factors -=
+                        -current_line_child.resolve_flex_shrink() * flex_basis;
+                }
+            }
+            start_sizes.push(clamped);
+        } else {
+            free_space_correction += clamped - flex_basis;
+            start_sizes.push(flex_basis);
+        }
+        frozen.push(freeze);
+    }
+    flex_line.layout.remaining_free_space += free_space_correction;
+    let original_free_space = flex_line.layout.remaining_free_space;
+
     // First pass: detect the flex items whose min/max constraints trigger
     distribute_free_space_first_pass(
         node,
         flex_line,
+        &start_sizes,
+        &frozen,
         direction,
         main_axis,
-        owner_width,
-        main_axis_owner_size,
         available_inner_main_dim,
         available_inner_width,
     );
@@ -1672,6 +1747,8 @@ fn resolve_flexible_length<'a, N: LayoutNode<'a>>(
     // Second pass: resolve the sizes of the flexible items
     let distributed_free_space = distribute_free_space_second_pass(
         flex_line,
+        &start_sizes,
+        &frozen,
         node,
         main_axis,
         cross_axis,
