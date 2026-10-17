@@ -26,18 +26,21 @@ pushes it if `push = true`). The code branch stays free of these commits.
 Accepted work lands through **stacked PRs** on `bluesky-social/barre` whose
 CI runs the full suite (docs/STACKS.md): the stacker moves the local `stack`
 branch, which workers start from, and opens a PR per layer; Samuel merges
-them from the bottom. It is on where `work/orch.local.toml` sets `[stack]
-repo` (and `branch = "stack"`); without it (e.g. a scratch orchestrator under
-`BARRE_WORK`) the local merge bot cherry-picks accepted attempts onto
-`branch` after a full local `./conf` run and never pushes.
+them from the bottom. It is configured in `harness/orch.toml` (`branch = "stack"`, `[stack]
+repo`); with `repo = ""` (a scratch orchestrator's own `orch.local.toml`)
+the local merge bot instead cherry-picks accepted attempts onto `branch`
+after a full local `./conf` run, and never pushes.
 
 **Architect work lands the same way.** Nothing but a PR merge moves `main`
 (CI also commits README updates to it). Commit on your own branch (a
 worktree is fine), then from the main checkout `./orch land BRANCH`: the
 branch becomes its own layer on top of the stack, with the same CI, and
 merges with the rest. Merge `stack` into the branch first if it conflicts.
-`./orch stack` shows where it is. Never commit on `stack` (the stacker
-rebuilds it) or push `main`.
+`./orch stack` shows where it is. Run `./orch` from the main checkout,
+never a worktree (its state is `work/` there). `land` only queues: a
+running `./orch run` (or the next one; with nothing else to do it stays up
+until the layer's CI is judged) pushes it. Never commit on `stack` (the
+stacker rebuilds it) or push `main`.
 
 ## The spec (`./spec`, `harness/spec.py`)
 
@@ -219,6 +222,7 @@ branch with its own state:
 
 ```
 git branch -f smoke-scratch main
+mkdir -p /tmp/barre-smoke && printf '[stack]\nrepo = ""\n' > /tmp/barre-smoke/orch.local.toml   # merge bot, no PRs
 BARRE_WORK=/tmp/barre-smoke ./orch run --tickets tickets/smoke --branch smoke-scratch --max-attempts 2
 # clean up: its worktrees, the snapshot branch it created, the attempt refs
 rm -rf /tmp/barre-smoke && git worktree prune && git branch -D smoke-scratch orch-runs

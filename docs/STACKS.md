@@ -81,7 +81,7 @@ agents (perf work, the RN shim, docs) commit on their own branch, then
 
 ```
 git merge stack                     # in the branch's worktree, only if it conflicts with the stack top
-./orch land my-branch               # from the main checkout; needs a running `./orch run`
+./orch land my-branch               # from the main checkout (not a worktree: the state is its work/)
 ```
 
 The branch becomes the next layer (alone, never batched with tickets), gets
@@ -132,16 +132,24 @@ and is snapshotted to `orch-runs` like everything else.
 
 ## Running it
 
-`work/orch.local.toml` on the machine that runs the swarm (the rest of
-`[stack]` is in `harness/orch.toml`):
+`harness/orch.toml`:
 
 ```toml
 branch = "stack"                 # local only: the stack top, which workers start from
 [stack]
 repo = "bluesky-social/barre"
-# trunk = "some-branch"          # default main; or the branch of an open PR the stack sits on
+trunk = "main"                   # or the branch of an open PR the stack sits on
 # trunk_pr = 3                   # that PR, put at the bottom of the GitHub stack
+check = "conformance"            # the check whose artifact decides
+required_checks = ["conformance", "fmt, clippy, test"]
+artifact = "conf-results"
+# branch_prefix = "stack/"       # layer branches; give a scratch orchestrator its own
 ```
+
+A scratch orchestrator (`BARRE_WORK=...`) uses the same file, so it lands
+through PRs too unless its own `orch.local.toml` sets `[stack] repo = ""`
+(the local merge bot) or a `branch_prefix` of its own (its layer ids start
+at 1 again).
 
 `git branch stack origin/main` once before the first run. The main checkout
 should stay on `branch`, so the trusted runner (`./conf`, `skip.txt`) the

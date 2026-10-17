@@ -465,6 +465,8 @@ class Stacker:
         try:
             if len(items) > 1:
                 msg = f"Red: {reason}. Splitting its {len(items)} tickets into smaller layers to find the cause."
+            elif items[0]["kind"] == "land":
+                msg = f"Red: {reason}. Dropped from the stack; fix `{items[0]['ticket']}` and `./orch land` it again."
             else:
                 msg = f"Red: {reason}. The ticket goes back to the pool."
             self.gh.comment(layer["pr"], msg + ("\n\n" + detail if detail else ""))
@@ -622,9 +624,13 @@ class Stacker:
         threading.Thread(target=self.run_forever, daemon=True, name="stacker").start()
 
     def pending(self):
-        """Queued items plus the layer waiting for CI (keeps `orch run` alive)."""
-        q = self.db.one("SELECT COUNT(*) AS n FROM stack_queue")["n"]
-        return q + self.db.one("SELECT COUNT(*) AS n FROM layers WHERE status = 'pending'")["n"]
+        """Queued items plus the layer waiting for CI (keeps `orch run` alive).
+        Waits for a tick in progress: a layer is marked red before its PR is
+        commented on and closed, and `orch run` exits (killing this daemon
+        thread) as soon as nothing is pending."""
+        with self.lock:
+            q = self.db.one("SELECT COUNT(*) AS n FROM stack_queue")["n"]
+            return q + self.db.one("SELECT COUNT(*) AS n FROM layers WHERE status = 'pending'")["n"]
 
     def status(self):
         lines = []

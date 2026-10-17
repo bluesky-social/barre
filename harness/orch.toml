@@ -1,7 +1,10 @@
 # Orchestrator configuration. Per-machine overrides go in work/orch.local.toml
 # (same keys; tables are merged), e.g. `slots = 8` on a bigger box.
 
-branch = "main"   # integration branch the merge bot advances
+# Local integration branch workers start from. With a stack repo set it is
+# the stack top, which the stacker rebuilds (never commit on it); main only
+# moves by merging the stack's PRs on GitHub (docs/STACKS.md).
+branch = "stack"
 # Concurrent workers. Each slot's gate runs cargo build + clippy (a warm,
 # per-slot target dir) and then ./conf, which links Yoga's gtest suite
 # (C++) against barre-ffi and runs it one process per test. The Rust builds
@@ -66,12 +69,12 @@ extra_args = []           # appended to every ./conf invocation
 
 [stack]
 # Land through stacked PRs whose CI runs the full suite (docs/STACKS.md),
-# instead of the local merge bot. Turned on per machine in
-# work/orch.local.toml (with branch = "stack"), so a scratch orchestrator
-# (BARRE_WORK=..., the smoke test) never opens PRs by accident:
-#   branch = "stack"
+# instead of the local merge bot. A scratch orchestrator (BARRE_WORK=..., the
+# smoke test) must turn it off in its own orch.local.toml, or it opens PRs:
+#   branch = "smoke-scratch"
 #   [stack]
-#   repo = "bluesky-social/barre"
+#   repo = ""
+repo = "bluesky-social/barre"
 trunk = "main"
 check = "conformance"                                 # the job whose artifact decides (.github/workflows/ci.yml)
 required_checks = ["conformance", "fmt, clippy, test"]
