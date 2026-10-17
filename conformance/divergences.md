@@ -76,3 +76,160 @@ tree's at the same size. Every Yoga failure among them was confirmed to be
 this bug: each passes on Yoga when, before each relayout, only
 `computedFlexBasis` is cleared on every node (without dirtying anything),
 and each passes with `WebFlexBasis` enabled.
+
+## Bugs from the Yoga issue tracker audit (docs/YOGA-ISSUES.md)
+
+Regression tests for audited Yoga bugs, one file per issue, each citing the
+source of its expected values (a browser result quoted in the issue, the
+issue's hand computation, or one shown in the test). Where the correct
+numbers are not known, the test is the "relayout == fresh layout"
+invariant (`conformance/tests/util/LayoutInvariant.h`). Tests not listed as
+failing pass on Yoga (controls and must-preserve behaviour).
+
+### yoga#2038: flexShrink runaway from an FMA residual
+
+<https://github.com/react/yoga/issues/2038>. The issue's 4-node repro: a
+row's only shrinkable item has an `aspectRatio` basis (21.083334) and
+`flexShrink: 3`. Freezing it at 0 in `distributeFreeSpaceFirstPass` should
+cancel `totalFlexShrinkScaledFactors` to 0, but the subtraction is
+contracted into an FMA that uses the unrounded product, leaving 1.9e-6:
+just above the `1e-6f` guard from #1974, so `distributeFreeSpaceSecondPass`
+divides the remaining free space by it. Reproduces in the conformance
+runner's libyoga too (Apple clang, arm64, even at -O0). barre computes in
+Rust, which never contracts, so it gets 0 x 0; the tests guard that.
+
+`conformance/tests/YGFlexShrinkResidualTest.cpp`:
+
+| test | Yoga | why |
+|---|---|---|
+| `aspect_ratio_box_flex_shrink_3` | fails | box 8.29e9 x 9.04e9; expected 0 x 0 (the issue) |
+| `aspect_ratio_box_flex_shrink_table` | fails | the issue's table of flexShrink values |
+| `shrinking_never_grows` | fails | flexShrink 0.25..250: a shrinking item never exceeds its basis; first fails at 2.25 |
+
+### yoga#2035: free space computed from min-clamped flex bases
+
+<https://github.com/react/yoga/issues/2035>. `calculateFlexLine` sums the
+*clamped* bases into `sizeConsumed` and both distribution passes start from
+the clamped basis, so an item raised by its `minWidth` gets its minimum plus
+a full share. CSS 9.7 uses the flex base sizes. Expected values are Chrome's
+(and Firefox's, Safari's), quoted in the issue: 40 / 80 and 200 / 50 / 50;
+Yoga gives 60 / 60 and 233 / 34 / 33, in rows and columns, with the default
+config, `YGErrataNone` and `useWebDefaults` (not errata-gated).
+
+`conformance/tests/YGMinClampedFreeSpaceTest.cpp`: both tests fail on Yoga.
+
+### yoga#1932: baseline of an unmeasured child
+
+<https://github.com/react/yoga/issues/1932>. In an `alignItems: baseline`
+row that is measured before it is laid out, an item with a definite size
+is not laid out, so its baseline child's measured height is undefined and
+`calculateBaseline` returns NaN; the line's height comes out 0. The issue's
+tree: a 200-wide, padding-10 baseline row holding a 100x100 row with one
+empty child. Expected (by hand, shown in the test; Chrome/Safari lay it out
+normally per the issue's screenshots): row 200 x 120, item at (10, 10).
+Yoga: row 20 tall (50 with a second, 30-tall item).
+
+`conformance/tests/YGBaselineUnmeasuredChildTest.cpp`:
+
+| test | Yoga | why |
+|---|---|---|
+| `baseline_row_in_content_sized_column` | fails | the issue's tree |
+| `baseline_row_in_content_sized_column_with_available_size` | fails | |
+| `baseline_row_in_fixed_size_column` | fails | the row's own height is auto, so it is still measured first |
+| `baseline_row_two_items_in_content_sized_column` | fails | |
+| `baseline_row_item_without_children` | passes | control: no unmeasured grandchild, no bug |
+
+### yoga#1659: `YGNodeFree` must dirty its former parent (fixed in Yoga)
+
+<https://github.com/react/yoga/issues/1659>, closed. Must-preserve tests
+(`conformance/tests/YGNodeFreeDirtiesParentTest.cpp`): the issue's sequence
+(`YGNodeFree` of a leaf, `YGNodeFreeRecursive` of a leaf and of a subtree
+each dirty the root), propagation to all ancestors with the dirtied
+callback, and relayout after freeing == a fresh tree. All pass on Yoga.
+
+### yoga#1626: percentage padding stale after resize
+
+<https://github.com/react/yoga/issues/1626>. Resizing a parent dirties only
+the parent; the child, offered the same available size and mode, hits its
+measurement cache, whose key does not include the size percentages resolve
+against, and keeps padding (and margin) resolved against the old width.
+Expected values are the issue's: 50% of 10 = 5, then 50% of 5 = 2.5.
+
+`conformance/tests/YGPercentPaddingRelayoutTest.cpp`:
+
+| test | Yoga | why |
+|---|---|---|
+| `percent_padding_updates_when_root_resized` | fails | the issue's repro: padding stays 5 |
+| `percent_padding_updates_when_inner_parent_resized` | fails | the repro from the issue's comments |
+| `percent_padding_moves_grandchild_after_resize` | fails | the stale padding is visible in positions: grandchild at 100, not 50 |
+| `relayout_matches_fresh_percent_padding_margin` | fails | relayout == fresh, comparing padding and margin too |
+| `percent_padding_updates_when_child_also_dirtied` | passes | control: the issue's workaround (dirty the child) |
+
+### yoga#1784: measure func sees a stale available width after a resize
+
+<https://github.com/react/yoga/issues/1784>. No minimal repro in the issue;
+the tests build its described shape (a panel resized 1pt at a time,
+140 -> 180 -> 140, holding a 35%-wide container with fixed paddings, a
+fixed spacer and wrapping text) and check relayout == fresh at every step.
+On Yoga they pass with no pixel rounding (point scale factor 0) and fail
+with rounding (scale 1: first at panel width 141 in the issue's shape): the
+text keeps a measurement from the previous size. Marking the texts dirty
+before each relayout (the reporter's workaround) makes it pass, so it is
+stale cached state, the same family as #1626 and #1003.
+
+`conformance/tests/YGMeasureAvailableWidthRelayoutTest.cpp`:
+
+| test | Yoga | why |
+|---|---|---|
+| `relayout_matches_fresh_issue_shape` | fails | root 1340 tall after relayout at 141, 1300 fresh |
+| `relayout_matches_fresh_nested_percent_widths` | fails | nested % widths with fixed paddings (the reporter's follow-up) |
+| `relayout_matches_fresh_row_with_flex` | fails | |
+| `relayout_matches_fresh_issue_shape_texts_marked_dirty` | passes | control: texts dirtied before each relayout |
+| `text_size_tracks_panel_width` | passes | hand-computed text size at scale 0 |
+
+### yoga#1003: cached measurement ignores min/max
+
+<https://github.com/react/yoga/issues/1003>. `canUseCachedMeasurement` reuses
+a size measured against an undefined height when the new AtMost height
+still fits it, though the child's percentage min/max height now clamp
+differently. The issue's repro (all three of its cases, with its config
+and without): child height 10, minHeight 40%, maxHeight 60%; expected 12 at
+owner height 30 (the issue's computation: max(12, min(10, 18))).
+
+`conformance/tests/YGCachedMeasurementMinMaxTest.cpp`:
+
+| test | Yoga | why |
+|---|---|---|
+| `measure_then_layout_at_30` | fails | the issue's case 2: cached 10 reused |
+| `inner_parent_height_from_auto_to_30` | fails | same through a non-root parent's style height |
+| `layout_at_30`, `measure_then_layout_at_10_then_30`, `measure_undefined_height` | pass | the issue's cases 1 and 3, and the unclamped measurement |
+
+### yoga#2006: first-pass running totals (fixed in Yoga, errata-gated)
+
+<https://github.com/react/yoga/issues/2006>, closed: the fix divides by the
+original flex totals; `YGErrataFlexFirstPassUsesRunningTotals` (set on new
+configs by default) keeps the legacy result. Both are contract.
+`conformance/tests/YGFirstPassRunningTotalsTest.cpp` pins the issue's
+playground tree with the bit cleared (180 / 180 / 180 wherever the larger
+minimum is) and set (60 / 30 / 30, Yoga's legacy result, hand-checked), and
+the grow/max and shrink/min paths with the bit cleared for every item
+order (CSS by hand). All pass on Yoga.
+
+### yoga#2007: `computeMinContentMainSize` recurses twice per child
+
+<https://github.com/react/yoga/issues/2007>. Correct layout, exponential
+time: the container branch calls itself once per axis for every child, so a
+chain of `depth` rows costs O(2^depth); reached from
+`computeAutoMinMainSize` whenever `YGErrataMinSizeUndefinedInsteadOfAuto`
+is not set. The issue's chain of rows (`YGErrataNone`), with a measured
+leaf so the walk can be counted: Yoga makes exactly 2^(depth+1) measure
+calls (2048 at depth 10, 2097152 at 20).
+
+`conformance/tests/YGMinContentRecursionTest.cpp`:
+
+| test | Yoga | why |
+|---|---|---|
+| `measure_calls_polynomial_in_depth` | fails | calls(20) <= 16 * calls(10) |
+| `measure_calls_bounded_at_depth_20` | fails | calls <= 16 * depth^2 |
+| `deep_chain_completes_with_right_layout` | times out | the issue's repro at depth 26 (10 s timeout) |
+| `shallow_chain_layout` | passes | the expected layout at depth 6 |

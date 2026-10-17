@@ -20,3 +20,38 @@ barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_wra
 barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_nested  yoga#1552: relayout keeps percent flex bases resolved against the previous size
 barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_min_max_percent  yoga#1552: relayout keeps percent flex bases resolved against the previous size
 barre/YGFlexBasisRelayoutTest/YGFlexBasisRelayoutTest.relayout_matches_fresh_measure_funcs  yoga#1552: relayout keeps percent flex bases resolved against the previous size
+#
+# yoga#2038: flexShrink runaway from an FMA residual slipping past the 1e-6f shrink-factor guard
+barre/YGFlexShrinkResidualTest/YGFlexShrinkResidualTest.aspect_ratio_box_flex_shrink_3  yoga#2038: sole shrinkable aspectRatio box is ~8.29e9 x 9.04e9 instead of 0 x 0
+barre/YGFlexShrinkResidualTest/YGFlexShrinkResidualTest.aspect_ratio_box_flex_shrink_table  yoga#2038: same, for several flexShrink values
+barre/YGFlexShrinkResidualTest/YGFlexShrinkResidualTest.shrinking_never_grows  yoga#2038: a shrinking item ends up ~8e9 wide (first at flexShrink 2.25)
+#
+# yoga#2035: free space computed from min-clamped flex bases
+barre/YGMinClampedFreeSpaceTest/YGMinClampedFreeSpaceTest.min_below_share_is_not_added_to_share  yoga#2035: 60 / 60 instead of Chrome's 40 / 80
+barre/YGMinClampedFreeSpaceTest/YGMinClampedFreeSpaceTest.min_above_share_freezes_at_min  yoga#2035: 233 / 34 / 33 instead of Chrome's 200 / 50 / 50
+#
+# yoga#1932: calculateBaseline reads the unmeasured height (NaN) of a baseline child
+barre/YGBaselineUnmeasuredChildTest/YGBaselineUnmeasuredChildTest.baseline_row_in_content_sized_column  yoga#1932: baseline row is 20 tall (padding only) instead of 120
+barre/YGBaselineUnmeasuredChildTest/YGBaselineUnmeasuredChildTest.baseline_row_in_content_sized_column_with_available_size  yoga#1932: baseline row is 20 tall instead of 120
+barre/YGBaselineUnmeasuredChildTest/YGBaselineUnmeasuredChildTest.baseline_row_in_fixed_size_column  yoga#1932: baseline row is 20 tall instead of 120
+barre/YGBaselineUnmeasuredChildTest/YGBaselineUnmeasuredChildTest.baseline_row_two_items_in_content_sized_column  yoga#1932: baseline row is 50 tall instead of 120
+#
+# yoga#1626: percentage padding/margin not re-resolved when the containing block is resized
+barre/YGPercentPaddingRelayoutTest/YGPercentPaddingRelayoutTest.percent_padding_updates_when_root_resized  yoga#1626: 50% padding stays 5 after the parent shrinks from 10 to 5
+barre/YGPercentPaddingRelayoutTest/YGPercentPaddingRelayoutTest.percent_padding_updates_when_inner_parent_resized  yoga#1626: same, with a non-root parent
+barre/YGPercentPaddingRelayoutTest/YGPercentPaddingRelayoutTest.percent_padding_moves_grandchild_after_resize  yoga#1626: stale padding (100, not 50) keeps the grandchild at left 100
+barre/YGPercentPaddingRelayoutTest/YGPercentPaddingRelayoutTest.relayout_matches_fresh_percent_padding_margin  yoga#1626: relayout keeps percent padding/margin resolved against the old width
+#
+# yoga#1784: measure func sees a stale available width after an ancestor is resized
+barre/YGMeasureAvailableWidthRelayoutTest/YGMeasureAvailableWidthRelayoutTest.relayout_matches_fresh_issue_shape  yoga#1784: at panel width 141 (scale 1) the text keeps a stale measurement (root 1340 tall, fresh 1300)
+barre/YGMeasureAvailableWidthRelayoutTest/YGMeasureAvailableWidthRelayoutTest.relayout_matches_fresh_nested_percent_widths  yoga#1784: text width 72 after relayout, 73 fresh
+barre/YGMeasureAvailableWidthRelayoutTest/YGMeasureAvailableWidthRelayoutTest.relayout_matches_fresh_row_with_flex  yoga#1784: root 260 tall after relayout, 240 fresh
+#
+# yoga#1003: canUseCachedMeasurement ignores min/max (percent min/max re-clamp)
+barre/YGCachedMeasurementMinMaxTest/YGCachedMeasurementMinMaxTest.measure_then_layout_at_30  yoga#1003: cached height 10 reused instead of max(12, min(10, 18)) = 12
+barre/YGCachedMeasurementMinMaxTest/YGCachedMeasurementMinMaxTest.inner_parent_height_from_auto_to_30  yoga#1003: same, parent height auto -> 30 through its style
+#
+# yoga#2007: computeMinContentMainSize recurses twice per child (O(2^depth))
+barre/YGMinContentRecursionTest/YGMinContentRecursionTest.measure_calls_polynomial_in_depth  yoga#2007: 2048 measure calls at depth 10, 2097152 at depth 20 (2^(depth+1))
+barre/YGMinContentRecursionTest/YGMinContentRecursionTest.measure_calls_bounded_at_depth_20  yoga#2007: 2097152 measure calls at depth 20
+barre/YGMinContentRecursionTest/YGMinContentRecursionTest.deep_chain_completes_with_right_layout  yoga#2007: a 26-deep chain of rows times out (10 s)
