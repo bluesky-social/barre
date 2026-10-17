@@ -1,0 +1,30 @@
+# Tests out of scope for barre. Format: one entry per line,
+#   <test ID prefix>  <reason>
+# A prefix ending in "/" skips a whole file (it is not built). Skipped tests
+# are reported as "skip", never as pass, with both barre and --yoga.
+#
+# Policy: a test is in scope iff it exercises Yoga's public C ABI (the YG*
+# functions of vendor/yoga/yoga/Yoga.h). Entries below were determined from
+# each file's includes and from the undefined symbols of its compiled object
+# (`nm -u | c++filt | grep facebook::yoga`), not by guessing.
+#
+# Does not link against a C ABI (references non-inline facebook::yoga symbols):
+CacheTest/  needs Yoga internals: calls facebook::yoga::canUseCachedMeasurement and yoga::Config::setPointScaleFactor (yoga/algorithm/Cache.h, yoga/config/Config.h)
+EventPublisherTest/  needs Yoga internals: tests the C++ event API (Event::publish/subscribe/reset, LayoutPassReasonToString in yoga/event/event.h)
+StyleTest/  needs Yoga internals: tests yoga::Style directly (yoga/style/Style.h; references facebook::yoga::fatalWithMessage); no YG* calls
+YGConfigTest/  needs Yoga internals: fixture and tests use yoga::Config/yoga::Node (Config::setCloneNodeCallback, cloneNode, getVersion, setErrata, configUpdateInvalidatesLayout, Node::Node); the C-API-only tests in this file (logger, point scale factor) are lost with it and should be ported to conformance/tests
+YGDirtiedTest/  needs Yoga internals: calls yoga::Node::setDirty and Node::markDirtyAndPropagate through static_cast<yoga::Node*>(YGNodeRef)
+YGNodeCallbackTest/  needs Yoga internals: tests yoga::Node directly (Node::Node, setMeasureFunc, measure, baseline); no YG* calls
+YGPersistenceTest/  needs Yoga internals: mixed_shared_and_owned_children calls yoga::Node::getChildren/setChildren; cloning_and_freeing counts nodes through Yoga's internal Event API (TestUtil::startCountingNodes)
+YGPersistentNodeCloningTest/  needs Yoga internals: fixture builds trees with resolveRef(node)->insertChild/setChildren/setOwner/setDirty on yoga::Node
+#
+# Links, but only through Yoga internals or header-only Yoga code; against
+# barre it would reinterpret barre's handles as yoga::Node or pass vacuously:
+EventsTest/  needs Yoga internals: every assertion observes Yoga's C++ event stream (Event::subscribe via ScopedEventSubscription); barre links a no-op event shim, so these would observe nothing
+YGLayoutableChildrenTest/  needs Yoga internals: iterates resolveRef(YGNodeRef)->getLayoutChildren(), an inline yoga::Node method that would read barre's handles as yoga::Node
+FloatOptionalTest/  header-only Yoga internals: tests yoga::FloatOptional and numeric helpers (yoga/numeric/*.h); no engine code, would pass vacuously
+GridStyleTest/  header-only Yoga internals: tests yoga::Style/GridStyle value semantics (yoga/style/GridStyle.h); no YG* calls, would pass vacuously
+OrdinalsTest/  header-only Yoga internals: tests yoga::ordinals<Edge> (yoga/enums/Edge.h); no engine code, would pass vacuously
+SmallValueBufferTest/  header-only Yoga internals: tests yoga::SmallValueBuffer (yoga/style/SmallValueBuffer.h); no engine code, would pass vacuously
+StyleValuePoolTest/  header-only Yoga internals: tests yoga::StyleValuePool (yoga/style/StyleValuePool.h); no engine code, would pass vacuously
+YGValueTest/  header-only: tests the inline C++ operator== of YGValue in yoga/YGValue.h; calls no YG* function, would pass vacuously

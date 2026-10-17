@@ -1,0 +1,3 @@
+#!/bin/sh
+# barre conformance runner: Yoga's gtest suite against barre. See docs/CONFORMANCE.md.
+exec python3 "$(dirname "$0")/harness/conf/conf.py" "$@"
