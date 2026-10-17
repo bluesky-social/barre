@@ -1953,6 +1953,7 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
                 // baseline.
                 let ascent = calculate_baseline_of_child(
                     child,
+                    perform_layout,
                     direction,
                     available_inner_width,
                     available_inner_height,
@@ -2003,8 +2004,17 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
 /// `perform_layout`), which writes real measured dimensions down its subtree
 /// before its baseline is read. The child's measured size is unchanged, so the
 /// owner's flex results do not change. The shortcut itself is not changed.
+///
+/// When the owner is only being measured (`owner_perform_layout` false), this
+/// lays the child's subtree out outside the owner's layout pass. A later
+/// layout pass of the owner, or of any ancestor, answered from a layout cache
+/// entry stored in an earlier layout then skips laying the subtree out again
+/// and leaves it as this call left it, where a fresh layout runs that pass and
+/// lays it out again (found by the fuzzer, `barre-only-baseline`). So this
+/// also invalidates those entries ([`invalidate_earlier_layout_cache_entries`]).
 fn calculate_baseline_of_child<'a, N: LayoutNode<'a>>(
     child: N,
+    owner_perform_layout: bool,
     direction: Direction,
     available_inner_width: f32,
     available_inner_height: f32,
@@ -2034,8 +2044,31 @@ fn calculate_baseline_of_child<'a, N: LayoutNode<'a>>(
             depth,
             generation_count,
         );
+        if !owner_perform_layout {
+            invalidate_earlier_layout_cache_entries(child, generation_count);
+        }
     }
     calculate_baseline(child)
+}
+
+/// barre-only (yoga#1932), no Yoga counterpart: after
+/// [`calculate_baseline_of_child`] laid `node`'s subtree out during a
+/// measure-only pass of its owner, invalidates the layout cache entry
+/// (`cached_layout`) of every ancestor of `node` that was stored in a layout
+/// other than this one. A hit on such an entry assumes the subtree still
+/// holds what that layout's run left in it; a fresh layout has no such entry
+/// and runs the pass. Entries stored in this layout stay: a fresh layout
+/// stores and hits them the same way. Measurement entries stay too: a
+/// measurement does not read the subtree's layout.
+fn invalidate_earlier_layout_cache_entries<'a, N: LayoutNode<'a>>(node: N, generation_count: u32) {
+    let mut ancestor = node.owner();
+    while let Some(owner) = ancestor {
+        let layout = owner.layout();
+        if layout.cached_layout.get().generation != generation_count {
+            layout.cached_layout.set(CachedMeasurement::default());
+        }
+        ancestor = owner.owner();
+    }
 }
 
 /// `calculateLayoutImpl`: the main routine, implementing a subset of the
@@ -2772,6 +2805,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
                     if resolve_child_alignment(node, child) == Align::Baseline {
                         let ascent = calculate_baseline_of_child(
                             child,
+                            perform_layout,
                             direction,
                             available_inner_width,
                             available_inner_height,
@@ -2920,6 +2954,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
                                 current_lead + max_ascent_for_current_line
                                     - calculate_baseline_of_child(
                                         child,
+                                        perform_layout,
                                         direction,
                                         available_inner_width,
                                         available_inner_height,
