@@ -13,9 +13,8 @@ pub fn padding_and_border_for_axis<'a, N: LayoutNode<'a>>(
     direction: Direction,
     width_size: f32,
 ) -> f32 {
-    let style = node.style();
-    style.compute_inline_start_padding_and_border(axis, direction, width_size)
-        + style.compute_inline_end_padding_and_border(axis, direction, width_size)
+    node.style()
+        .compute_padding_and_border_for_axis(axis, direction, width_size)
 }
 
 /// `boundAxisWithinMinAndMax`. `value` may be undefined.
