@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/barre", "crates/barre-ffi"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.89"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+# The algorithm mirrors Yoga's C++ signatures and control flow (many
+# parameters, nested ifs kept as Yoga writes them).
+too_many_arguments = "allow"
+collapsible_if = "allow"
+collapsible_else_if = "allow"
+only_used_in_recursion = "allow"
+
+# Panics must never unwind into C. Yoga's fatal assertions throw
+# `std::logic_error` (the suite asserts this with ASSERT_THROW), and that C++
+# exception has to cross the exported `extern "C-unwind"` frame, which needs the
+# unwind strategy. Every other panic aborts: `extern "C"` exports abort on
+# unwind, and `extern "C-unwind"` exports catch Rust panics and abort
+# (crates/barre-ffi/src/guard.rs).
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+debug = 1

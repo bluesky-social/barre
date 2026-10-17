@@ -1,0 +1,10 @@
+[package]
+name = "barre"
+description = "A reimplementation of Yoga (the flexbox layout engine) in Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
