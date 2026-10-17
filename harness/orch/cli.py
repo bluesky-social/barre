@@ -271,6 +271,8 @@ def cmd_reset(args):
     if args.tier:
         fields["tier"] = args.tier
     db.set_ticket(args.ticket, **fields)
+    import pipeline
+    db.kv_set(pipeline.merge_regressions_key(args.ticket), "[]")
     print(f"{args.ticket} reopened")
 
 

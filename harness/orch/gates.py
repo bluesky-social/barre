@@ -130,9 +130,32 @@ def check_attempt(cfg, ticket, slot_index, cwd, base, head, adir):
         if s["build_fail"] and not s["pass"]:
             rep["reject"].append("the conformance suite does not build against this change")
         if s["regressions"]:
-            rep["reject"].append(f"{len(s['regressions'])} conformance regressions in target")
+            rep["reject"].append(f"{len(s['regressions'])} conformance regressions in target: "
+                                 + ", ".join(s["regressions"][:10]))
         if not s["new_passes"] and not ticket.check:
             rep["reject"].append("no new conformance passes in target")
+
+    # A diff can look clean against its own narrow target and still break
+    # tests elsewhere (T-0004's cache port regressed two YGStaleFlexBasisTest
+    # cases outside its target, unnoticed through 80+ accepted attempts until
+    # the merge bot's full run caught it, every time, at far higher cost than
+    # this). The full suite is a couple of seconds on a warm build
+    # (docs/CONFORMANCE.md); run it here so a cross-target regression is a
+    # gate rejection, not a wasted verifier call and a merge refusal.
+    if cfg.gate.get("full_check", True):
+        full_proc, full_s = run_conf([], cwd, adir, "gate-full", target_dir=target_dir,
+                                     baseline=ROOT / BASELINE, cfg=cfg.conf)
+        if full_s is None:
+            rep["reject"].append("the full-suite regression check produced no results: "
+                                 + runner_error(full_proc)[-600:])
+        elif not full_s["canaries_ok"]:
+            rep["reject"].append("full-suite regression check invalid (canaries failed)")
+        else:
+            rep["conf_full"] = {"runs": full_s["runs"], "regressions": full_s["regressions"]}
+            if full_s["regressions"]:
+                rep["reject"].append(f"{len(full_s['regressions'])} regressions in the full suite "
+                                     "(outside this ticket's own target): "
+                                     + ", ".join(full_s["regressions"][:10]))
     return finish(rep, adir)
 
 
@@ -166,6 +189,9 @@ def render(rep):
         if t["failing_sample"]:
             lines.append("  still failing (sample):")
             lines += [f"    {x}" for x in t["failing_sample"]]
+    cf = rep.get("conf_full")
+    if cf:
+        lines.append(f"full suite (regression check only): {cf['runs']} tests; {len(cf['regressions'])} regressions")
     for c in rep.get("checks", []):
         lines.append(f"check `{c['cmd']}`: exit {c['exit']}")
     flags = rep.get("lint_flag", [])

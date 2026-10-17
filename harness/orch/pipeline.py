@@ -6,6 +6,7 @@ fault: the attempt doesn't count, partial work is kept for the next attempt,
 and a finished attempt that only lacks its verification resumes there.
 """
 
+import json
 import re
 import threading
 import time
@@ -31,8 +32,13 @@ def next_tier(cfg, tier):
     return tiers[i + 1] if i + 1 < len(tiers) else None
 
 
-def strike(cfg, db, ticket, aid, reason, weight=1):
-    """Records a failed attempt; enough strikes move the ticket up a tier."""
+def strike(cfg, db, ticket, aid, reason, weight=1, salvage_attempt=None):
+    """Records a failed attempt; enough strikes move the ticket up a tier.
+
+    `salvage_attempt`, if given, keeps that attempt's diff for the next try
+    instead of starting fresh (used for a merge refusal: unlike a gate or
+    verifier rejection, the diff passed both and is worth continuing from,
+    the way a `revise` verdict is)."""
     row = db.ticket(ticket.id)
     db.note(ticket.id, aid, reason)
     strikes = row["strikes"] + weight
@@ -50,7 +56,7 @@ def strike(cfg, db, ticket, aid, reason, weight=1):
         db.note(ticket.id, aid, f"escalated from {row['tier']} to {up}")
         db.set_ticket(ticket.id, status="open", tier=up, strikes=0, salvage_attempt=None)
         return
-    db.set_ticket(ticket.id, status="open", strikes=strikes, salvage_attempt=None)
+    db.set_ticket(ticket.id, status="open", strikes=strikes, salvage_attempt=salvage_attempt)
 
 
 def infra_error(db, ticket, aid, what):
@@ -167,14 +173,41 @@ def judge(cfg, db, ticket, att, rep):
     db.set_attempt(att.id, finished=time.time())
 
 
+def merge_regressions_key(ticket_id):
+    return f"merge-regressions:{ticket_id}"
+
+
 def after_merge(cfg, db, ticket, att, m):
     """Bookkeeping once the merge bot has tried an accepted attempt."""
     write_json(Path(att.dir) / "merge.json", m)
     if not m["merged"]:
         log(f"{ticket.id}: merge refused: {m['reason'][:200]}")
-        db.note(ticket.id, att.id, f"accepted by the verifier but not merged: {m['reason'][:600]}")
-        db.set_ticket(ticket.id, status="open", salvage_attempt=att.id)
+        regressions = m.get("regressions") or []
+        detail = m["reason"][:400] + (": " + ", ".join(regressions[:10]) if regressions else "")
+        key = merge_regressions_key(ticket.id)
+        if regressions and sorted(regressions) == sorted(json.loads(db.kv_get(key) or "[]")):
+            # The same diff (or an equivalent one) hit the same regressions
+            # on consecutive merge attempts: retrying blind won't fix it, and
+            # without this check nothing ever stops it (T-0004 burned 83
+            # attempts, all "accept" then "merge refused: 2 regressions",
+            # before an architect noticed and fixed the baseline by hand).
+            db.note(ticket.id, att.id,
+                    f"accepted by the verifier but not merged: {detail}")
+            db.set_ticket(ticket.id, status="needs-architect", salvage_attempt=None,
+                          reason=f"the same regressions recurred on consecutive merge attempts: "
+                                 + ", ".join(regressions[:10]))
+            db.kv_set(key, "[]")
+            return
+        if regressions:
+            db.kv_set(key, json.dumps(sorted(regressions)))
+        # A merge refusal is a real strike, not a free retry (same bug as
+        # above, one attempt earlier): the diff passed gates and the
+        # verifier, so it's worth continuing from like a `revise` note, but
+        # it still counts toward escalation and max_attempts.
+        strike(cfg, db, ticket, att.id, f"accepted by the verifier but not merged: {detail}",
+               salvage_attempt=att.id)
         return
+    db.kv_set(merge_regressions_key(ticket.id), "[]")
     db.set_attempt(att.id, merged=1, new_passes=m["new_passes"])
     log(f"{ticket.id}: merged (+{m['new_passes']}, {m['total_pass']} total)")
     if m["target_complete"]:

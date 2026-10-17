@@ -204,6 +204,57 @@ def test_limits():
         check(lim.blocked() and lim.paused_tiers() == {"haiku", "sonnet", "opus"}, "an actual limit error holds everything")
 
 
+def test_merge_strike():
+    """A merge refusal must strike the ticket (not a free retry), carry the
+    regression list for the next attempt, and send the ticket to the
+    architect if the same regressions recur unchanged (the T-0004 bug:
+    83 attempts, all accepted, each refused for the same 2 regressions,
+    with no strike ever recorded)."""
+    import tickets
+    from common import Config
+    from db import DB
+    import pipeline
+    from worker import Attempt
+
+    cfg = Config(escalation={"strikes_per_tier": 2, "max_attempts": 6})
+
+    def att(d, n, tid):
+        return Attempt(n, "", "base", f"head{n}", 0.0, 0, None, None, str(Path(d) / "attempts" / str(n)))
+
+    with tempfile.TemporaryDirectory() as d:
+        db = DB(Path(d) / "state.db")
+        t = tickets.Ticket(id="T-X", title="x", scope=["x"], target=["y"], tier="haiku")
+        db.sync_tickets({t.id: t})
+        same = {"merged": False, "reason": "2 regressions in the full suite",
+                "regressions": ["a/Test.one", "a/Test.two"]}
+
+        pipeline.after_merge(cfg, db, t, att(d, 1, t.id), same)
+        row = db.ticket(t.id)
+        check(row["status"] == "open" and row["strikes"] == 1 and row["salvage_attempt"] == 1,
+              "a merge refusal strikes once and keeps the diff for the next attempt")
+
+        pipeline.after_merge(cfg, db, t, att(d, 2, t.id), same)  # same regressions again
+        row = db.ticket(t.id)
+        check(row["status"] == "needs-architect" and "a/Test.one" in row["reason"],
+              "the same regressions on consecutive merge attempts go to the architect")
+        check(db.kv_get(pipeline.merge_regressions_key(t.id)) == "[]", "the regression memory resets once escalated")
+
+        t2 = tickets.Ticket(id="T-Y", title="y", scope=["x"], target=["y"], tier="haiku")
+        db.sync_tickets({t2.id: t2})
+        pipeline.after_merge(cfg, db, t2, att(d, 3, t2.id),
+                             {"merged": False, "reason": "1 regression", "regressions": ["a/Test.one"]})
+        pipeline.after_merge(cfg, db, t2, att(d, 4, t2.id),
+                             {"merged": False, "reason": "1 regression", "regressions": ["a/Test.two"]})
+        row2 = db.ticket(t2.id)
+        check(row2["tier"] == "sonnet" and row2["strikes"] == 0,
+              "different regressions each time still strike normally (escalating a tier here)")
+
+        pipeline.after_merge(cfg, db, t2, att(d, 5, t2.id),
+                             {"merged": True, "new_passes": 1, "total_pass": 1, "target_complete": True,
+                              "remaining": []})
+        check(db.kv_get(pipeline.merge_regressions_key(t2.id)) == "[]", "a clean merge clears the regression memory")
+
+
 def test_redteam():
     from calibrate import CASES, build_diff
     from policy import lint
@@ -224,7 +275,7 @@ def test_redteam():
 
 
 def main():
-    for t in (test_spec, test_lint, test_conformance, test_tickets, test_limits, test_redteam):
+    for t in (test_spec, test_lint, test_conformance, test_tickets, test_limits, test_merge_strike, test_redteam):
         try:
             t()
         except Exception as e:  # noqa: BLE001
