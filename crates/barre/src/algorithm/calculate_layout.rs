@@ -913,13 +913,8 @@ fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
 /// `computeMinContentMainSize`: the min-content size of `node` along
 /// `requested_axis`, used by CSS Flexbox §4.5 automatic minimum sizing.
 ///
-/// * Leaf with measure function: invoke it with `AtMost 0` on the requested
-///   axis and `Undefined` on the other.
-/// * Empty leaf: 0.
-/// * Container: iterate in-flow children; sum their min-content along the
-///   container's main axis and take the max along its cross axis (plus
-///   margins), add the container's padding and border, and project onto
-///   `requested_axis`.
+/// Projects the pair from `compute_min_content_sizes` onto `requested_axis`;
+/// only the requested axis is measured at this level.
 fn compute_min_content_main_size<'a, N: LayoutNode<'a>>(
     node: N,
     requested_axis: FlexDirection,
@@ -928,53 +923,104 @@ fn compute_min_content_main_size<'a, N: LayoutNode<'a>>(
     owner_height: f32,
 ) -> f32 {
     let want_row = is_row(requested_axis);
-
-    // 1. Static value wins for any node (leaf or container).
-    let static_min = if want_row {
-        node.min_content_width()
+    let (row_axis, column_axis) = if want_row {
+        (Some(requested_axis), None)
     } else {
-        node.min_content_height()
+        (None, Some(requested_axis))
     };
-    if is_defined(static_min) {
-        return static_min;
+    let sizes = compute_min_content_sizes(
+        node,
+        row_axis,
+        column_axis,
+        owner_direction,
+        owner_width,
+        owner_height,
+    );
+    if want_row { sizes.row } else { sizes.column }
+}
+
+/// The min-content size of a node on the row and the column axis.
+#[derive(Copy, Clone, Debug)]
+struct MinContentSizes {
+    row: f32,
+    column: f32,
+}
+
+/// `computeMinContentMainSize` for up to two axes at once.
+///
+/// `row_axis` and `column_axis` are the exact `FlexDirection` Yoga would pass
+/// for that slot (they select the leaf's padding and border, which depends on
+/// the reverse directions too). `None` means the slot is not needed and is not
+/// computed; its field in the result is left as the node's static value or
+/// NaN.
+///
+/// This deliberately differs from Yoga's structure, not its results (yoga#2007).
+/// Yoga's container branch calls itself twice per child, once per axis, so
+/// each child's subtree is walked twice per level (O(2^depth)). Here each
+/// subtree is walked once: the container branch reads both the main and the
+/// cross axis of a child from the same call. Leaves still measure exactly the
+/// axes Yoga would measure.
+///
+/// * Leaf with measure function: invoke it with `AtMost 0` on the requested
+///   axis and `Undefined` on the other.
+/// * Empty leaf: 0.
+/// * Container: iterate in-flow children; sum their min-content along the
+///   container's main axis and take the max along its cross axis (plus
+///   margins), add the container's padding and border, and project onto each
+///   axis.
+fn compute_min_content_sizes<'a, N: LayoutNode<'a>>(
+    node: N,
+    row_axis: Option<FlexDirection>,
+    column_axis: Option<FlexDirection>,
+    owner_direction: Direction,
+    owner_width: f32,
+    owner_height: f32,
+) -> MinContentSizes {
+    // 1. Static value wins for any node (leaf or container), per axis.
+    let mut sizes = MinContentSizes {
+        row: node.min_content_width(),
+        column: node.min_content_height(),
+    };
+    // Keep only the slots that are needed and still undefined.
+    let row_axis = row_axis.filter(|_| is_undefined(sizes.row));
+    let column_axis = column_axis.filter(|_| is_undefined(sizes.column));
+    if row_axis.is_none() && column_axis.is_none() {
+        return sizes;
     }
 
     if node.has_measure_func() {
         // 2. Dynamic min-content callback if set. Otherwise fall back to the
         // regular measure function with `AtMost 0`, which text measurers
         // naturally answer with longest-word width.
-        let (width, width_mode, height, height_mode) = if want_row {
-            (0.0, MeasureMode::AtMost, f32::NAN, MeasureMode::Undefined)
-        } else {
-            (f32::NAN, MeasureMode::Undefined, 0.0, MeasureMode::AtMost)
-        };
-        let size = if node.has_min_content_measure_func() {
-            node.measure_min_content(width, width_mode, height, height_mode)
-        } else {
-            node.measure(width, width_mode, height, height_mode)
-        };
-        // Add the leaf's own padding and border, like the container branch
-        // below.
-        let leaf_direction = node.resolve_direction(owner_direction);
-        let padding_and_border = node.style().compute_flex_start_padding_and_border(
-            requested_axis,
-            leaf_direction,
-            owner_width,
-        ) + node.style().compute_flex_end_padding_and_border(
-            requested_axis,
-            leaf_direction,
-            owner_width,
-        );
-        return if want_row { size.width } else { size.height } + padding_and_border;
+        if let Some(axis) = row_axis {
+            sizes.row = leaf_min_content_on_axis(node, axis, owner_direction, owner_width);
+        }
+        if let Some(axis) = column_axis {
+            sizes.column = leaf_min_content_on_axis(node, axis, owner_direction, owner_width);
+        }
+        return sizes;
     }
 
     if node.child_count() == 0 {
-        return 0.0;
+        if row_axis.is_some() {
+            sizes.row = 0.0;
+        }
+        if column_axis.is_some() {
+            sizes.column = 0.0;
+        }
+        return sizes;
     }
 
     let direction = node.resolve_direction(owner_direction);
     let node_main_axis = resolve_direction(node.style().flex_direction(), direction);
     let node_cross_axis = resolve_cross_direction(node_main_axis, direction);
+    // The row and column slots of each child, as the exact axes Yoga's main
+    // and cross calls request.
+    let (child_row_axis, child_column_axis) = if is_row(node_main_axis) {
+        (node_main_axis, node_cross_axis)
+    } else {
+        (node_cross_axis, node_main_axis)
+    };
 
     let mut main_total = 0.0f32;
     let mut cross_max = 0.0f32;
@@ -987,27 +1033,27 @@ fn compute_min_content_main_size<'a, N: LayoutNode<'a>>(
             continue;
         }
 
-        let mut child_main = compute_min_content_main_size(
+        let child_sizes = compute_min_content_sizes(
             child,
-            node_main_axis,
+            Some(child_row_axis),
+            Some(child_column_axis),
             direction,
             owner_width,
             owner_height,
         );
-        child_main += child
-            .style()
-            .compute_margin_for_axis(node_main_axis, owner_width);
-
-        let mut child_cross = compute_min_content_main_size(
-            child,
-            node_cross_axis,
-            direction,
-            owner_width,
-            owner_height,
-        );
-        child_cross += child
-            .style()
-            .compute_margin_for_axis(node_cross_axis, owner_width);
+        let (child_main, child_cross) = if is_row(node_main_axis) {
+            (child_sizes.row, child_sizes.column)
+        } else {
+            (child_sizes.column, child_sizes.row)
+        };
+        let child_main = child_main
+            + child
+                .style()
+                .compute_margin_for_axis(node_main_axis, owner_width);
+        let child_cross = child_cross
+            + child
+                .style()
+                .compute_margin_for_axis(node_cross_axis, owner_width);
 
         main_total += child_main;
         // std::max(crossMax, childCross)
@@ -1046,7 +1092,47 @@ fn compute_min_content_main_size<'a, N: LayoutNode<'a>>(
     } else {
         main_total
     };
-    if want_row { width_min } else { height_min }
+    if row_axis.is_some() {
+        sizes.row = width_min;
+    }
+    if column_axis.is_some() {
+        sizes.column = height_min;
+    }
+    sizes
+}
+
+/// The measure-func part of `computeMinContentMainSize`'s leaf branch, for one
+/// axis: the leaf's measured min-content size on `requested_axis` (any row or
+/// column direction, as Yoga passed it), plus its own padding and border.
+fn leaf_min_content_on_axis<'a, N: LayoutNode<'a>>(
+    node: N,
+    requested_axis: FlexDirection,
+    owner_direction: Direction,
+    owner_width: f32,
+) -> f32 {
+    let want_row = is_row(requested_axis);
+    let (width, width_mode, height, height_mode) = if want_row {
+        (0.0, MeasureMode::AtMost, f32::NAN, MeasureMode::Undefined)
+    } else {
+        (f32::NAN, MeasureMode::Undefined, 0.0, MeasureMode::AtMost)
+    };
+    let size = if node.has_min_content_measure_func() {
+        node.measure_min_content(width, width_mode, height, height_mode)
+    } else {
+        node.measure(width, width_mode, height, height_mode)
+    };
+    // Add the leaf's own padding and border, like the container branch.
+    let leaf_direction = node.resolve_direction(owner_direction);
+    let padding_and_border = node.style().compute_flex_start_padding_and_border(
+        requested_axis,
+        leaf_direction,
+        owner_width,
+    ) + node.style().compute_flex_end_padding_and_border(
+        requested_axis,
+        leaf_direction,
+        owner_width,
+    );
+    (if want_row { size.width } else { size.height }) + padding_and_border
 }
 
 /// `computeAutoMinMainSize`: the CSS Flexbox §4.5 automatic minimum
