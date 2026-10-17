@@ -1,0 +1,15 @@
+# barre fuzz case (docs/FUZZ.md)
+# class scale1-only (over scales 0 and 1)
+# minimised from seed 6 mode 0, knobs default: 37 -> 7 nodes, 7 -> 2 sizes, 466 checks
+# at scale 1, last size: /1/0/0/0 height: relayout 1 fresh 0
+mode 0              # root pinned through min/max
+scale 1
+errata all
+sizes 200x200 100x100
+root
+  node shrink=1                                             # /0
+    node ar=1                                               # /0/0
+  node shrink=1 w=1                                         # /1
+    node                                                    # /1/0
+      node h=1%                                             # /1/0/0
+        node text=1                                         # /1/0/0/0

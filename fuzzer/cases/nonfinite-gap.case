@@ -1,0 +1,14 @@
+# barre fuzz case (docs/FUZZ.md)
+# class nonfinite (over scales 0 and 1)
+# minimised from seed 4566 mode 0, knobs --depth 4 --kids 3 --root-kids 3 --measure 50 --siblings 0 --steps 0 --wide: 35 -> 6 nodes, 7 -> 1 sizes, 175 checks
+# at scale 0, last size, fresh layout: /0/1 width = inf
+mode 0              # root pinned through min/max
+scale 0
+errata all
+sizes 800x100
+root
+  node dir=row gap=1                                        # /0
+    node basis=10%                                          # /0/0
+    node flex=1 minw=160                                    # /0/1
+    node grow=1 maxw=400                                    # /0/2
+      node text=500                                         # /0/2/0
