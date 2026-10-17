@@ -5,6 +5,98 @@ use crate::algorithm::flex_direction::resolve_direction;
 use crate::enums::{Direction, Display, PositionType, Wrap};
 use crate::node::{LayoutNode, LayoutableChildren, NodeExt};
 
+/// A growable list that keeps its first `CAP` elements inline (on the
+/// stack) and moves to the heap only past that. Yoga allocates a
+/// `std::vector` per flex line (and barre's yoga#2035 fix two more per
+/// `resolve_flexible_length`); malloc + free of those was ~15% of a fresh
+/// RN-shaped layout, where nearly every node has a handful of children.
+#[derive(Debug)]
+pub struct InlineVec<T: Copy, const CAP: usize> {
+    len: usize,
+    /// Filled with copies of the first element on the first push, so that no
+    /// slot is ever uninitialised.
+    inline: Option<[T; CAP]>,
+    /// Holds every element once there are more than `CAP`.
+    heap: Vec<T>,
+}
+
+impl<T: Copy, const CAP: usize> InlineVec<T, CAP> {
+    #[inline]
+    pub fn new() -> Self {
+        InlineVec {
+            len: 0,
+            inline: None,
+            heap: Vec::new(),
+        }
+    }
+
+    #[inline]
+    pub fn push(&mut self, value: T) {
+        if self.len < CAP {
+            match &mut self.inline {
+                Some(inline) => inline[self.len] = value,
+                None => self.inline = Some([value; CAP]),
+            }
+        } else {
+            if self.len == CAP {
+                self.heap.reserve(CAP * 2);
+                self.heap
+                    .extend_from_slice(self.inline.as_ref().map_or(&[][..], |a| &a[..]));
+            }
+            self.heap.push(value);
+        }
+        self.len += 1;
+    }
+}
+
+impl<T: Copy, const CAP: usize> Default for InlineVec<T, CAP> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Copy, const CAP: usize> std::ops::Deref for InlineVec<T, CAP> {
+    type Target = [T];
+    #[inline]
+    fn deref(&self) -> &[T] {
+        if self.len > CAP {
+            &self.heap
+        } else {
+            match &self.inline {
+                Some(inline) => &inline[..self.len],
+                None => &[],
+            }
+        }
+    }
+}
+
+impl<T: Copy, const CAP: usize> std::ops::DerefMut for InlineVec<T, CAP> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        if self.len > CAP {
+            &mut self.heap
+        } else {
+            match &mut self.inline {
+                Some(inline) => &mut inline[..self.len],
+                None => &mut [],
+            }
+        }
+    }
+}
+
+impl<'v, T: Copy, const CAP: usize> IntoIterator for &'v InlineVec<T, CAP> {
+    type Item = &'v T;
+    type IntoIter = std::slice::Iter<'v, T>;
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Inline capacity of a flex line's item list (and the per-item scratch of
+/// `resolve_flexible_length`).
+pub const LINE_INLINE_ITEMS: usize = 16;
+
 /// `yoga::FlexLineRunningLayout`.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct FlexLineRunningLayout {
@@ -30,11 +122,11 @@ pub struct FlexLineRunningLayout {
 
 /// `yoga::FlexLine`.
 #[derive(Debug)]
-pub struct FlexLine<N> {
+pub struct FlexLine<N: Copy> {
     /// List of children which are part of the line flow. This means they are
     /// not positioned absolutely, or with `display: "none"`, and do not
     /// overflow the available dimensions.
-    pub items_in_flow: Vec<N>,
+    pub items_in_flow: InlineVec<N, LINE_INLINE_ITEMS>,
     /// Accumulation of the dimensions and margin of all the children on the
     /// current line. This will be used in order to either set the dimensions
     /// of the node if none already exist or to compute the remaining space
@@ -64,7 +156,7 @@ pub fn calculate_flex_line<'a, N: LayoutNode<'a>>(
     iterator: &mut LayoutableChildren<'a, N>,
     line_count: usize,
 ) -> FlexLine<N> {
-    let mut items_in_flow: Vec<N> = Vec::with_capacity(node.child_count());
+    let mut items_in_flow = InlineVec::new();
     let mut size_consumed = 0.0f32;
     let mut total_flex_grow_factors = 0.0f32;
     let mut total_flex_shrink_scaled_factors = 0.0f32;

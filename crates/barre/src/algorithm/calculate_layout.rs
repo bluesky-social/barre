@@ -14,7 +14,7 @@ use crate::algorithm::cache::{CachedResult, find_cached_result};
 use crate::algorithm::flex_direction::{
     dimension, flex_start_edge, is_column, is_row, resolve_cross_direction, resolve_direction,
 };
-use crate::algorithm::flex_line::{FlexLine, calculate_flex_line};
+use crate::algorithm::flex_line::{FlexLine, InlineVec, LINE_INLINE_ITEMS, calculate_flex_line};
 use crate::algorithm::pixel_grid::round_layout_results_to_pixel_grid;
 use crate::algorithm::sizing_mode::{SizingMode, measure_mode};
 use crate::algorithm::trailing_position::{needs_trailing_position, set_child_trailing_position};
@@ -1692,8 +1692,8 @@ fn resolve_flexible_length<'a, N: LayoutNode<'a>>(
     // unclamped flex base size, and the initial free space is recomputed from
     // those start sizes. When the free space is undefined nothing is
     // distributed, and items start from their clamped size as in Yoga.
-    let mut start_sizes = Vec::with_capacity(flex_line.items_in_flow.len());
-    let mut frozen = Vec::with_capacity(flex_line.items_in_flow.len());
+    let mut start_sizes = InlineVec::<f32, LINE_INLINE_ITEMS>::new();
+    let mut frozen = InlineVec::<bool, LINE_INLINE_ITEMS>::new();
     let mut free_space_correction = 0.0f32;
     for &current_line_child in &flex_line.items_in_flow {
         let flex_basis = current_line_child.layout().computed_flex_basis.get();
