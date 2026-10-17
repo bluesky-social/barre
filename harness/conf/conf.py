@@ -669,19 +669,15 @@ def run(args, t0):
     to_build = [(k, p) for k, p in selected if not file_fully_skipped(k, skips)]
 
     barre = not args.yoga
-    lock_fd = os.open(build_dir / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        log(args, "conf: waiting for the build lock (another ./conf is using this build dir)")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-
     tmp = Path(tempfile.mkdtemp(prefix="conf-"))
     rng = random.SystemRandom()
+    lock_fd = None
+    canary_proc = None
     try:
+        # the canary object only needs headers: compile it while cargo runs
         canary_proc, canary_obj, canary_tests = compile_canary_obj(build, tmp, rng, args.canaries)
 
-        # engine
+        # engine (outside the build lock: cargo has its own)
         if args.yoga:
             variant, engine_lib = "yoga", build.yoga_lib
         else:
@@ -695,6 +691,13 @@ def run(args, t0):
             default_lib = RUNNER_ROOT / "target" / ("release" if args.release else "debug") / engine_lib.name
             variant = (f"barre-{'release' if args.release else 'debug'}" if engine_lib == default_lib
                        else "lib-" + shash(str(engine_lib)))
+
+        lock_fd = os.open(build_dir / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log(args, "conf: waiting for the build lock (another ./conf is using this build dir)")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
         build.write_ninja(to_build, variant, engine_lib, barre)
         if variant.startswith("lib-"):
             prune_lib_dirs(build, variant)
@@ -724,9 +727,8 @@ def run(args, t0):
                   + (f", {len(build_fail)} files failed to build" if build_fail else ""))
 
         # canary link
-        rc = canary_proc.wait()
-        canary_out = canary_proc.stdout.read() if canary_proc.stdout else ""
-        if rc != 0:
+        canary_out, _ = canary_proc.communicate()
+        if canary_proc.returncode != 0:
             raise ConfError("failed to compile the canary tests:\n" + canary_out[-3000:])
         canary_bin, lp = link_canary(build, tmp, canary_obj, barre, engine_lib)
         canary_build_error = None if lp.returncode == 0 else build_error_reason(lp.stdout + lp.stderr)
@@ -829,8 +831,12 @@ def run(args, t0):
             invalid.append(f"{len(passed_canaries)} canary tests with wrong assertions passed: "
                            + ", ".join(passed_canaries))
     finally:
+        if canary_proc is not None and canary_proc.poll() is None:
+            canary_proc.kill()
+            canary_proc.wait()
         shutil.rmtree(tmp, ignore_errors=True)
-        os.close(lock_fd)
+        if lock_fd is not None:
+            os.close(lock_fd)
 
     return report(args, results, file_of, invalid, canary_results, variant, time.monotonic() - t0, run_s)
 
