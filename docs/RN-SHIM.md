@@ -29,6 +29,8 @@ generic over a node-access trait from M1** (§3.4), otherwise M5 is a rewrite.
   { substitute(module("com.facebook.react:react-android")) ... }` block to `settings.gradle`
   (`expo-build-properties/build/android.js:280-293`). `newArchEnabled=true` (template
   `android/gradle.properties:38`).
+  **Update (Samuel, 2026-10-17):** a social-app PR enables source builds for Android dev too.
+  Assume ReactAndroid is always built from source; the prebuilt-AAR path below is moot.
 
 ### 1.2 iOS
 
