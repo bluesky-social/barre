@@ -15,6 +15,7 @@ Whether a ticket is *finished* is decided by its conformance target, not here.
 
 import llm
 from common import PROMPTS, WORK
+from limits import enforced_for_verifier
 
 MAX_DIFF_CHARS = 60_000
 
@@ -121,14 +122,16 @@ def render_case(ticket, spec, gate_text, diff):
     )
 
 
-def verify(cfg, ticket, spec, gate_text, diff, record=None, model=None):
+def verify(cfg, ticket, spec, gate_text, diff, record=None, model=None, confirm=False):
     """One model's judgement. Returns (answer dict with `decision`, cost).
     `decision` is "interrupted" if the run was cut off (usage limits etc.),
-    "error" if it produced nothing usable."""
+    "error" if it produced nothing usable. `confirm`: this is the confirming
+    re-judgement (its usage-limit policy is `enforce_verifier_confirm`)."""
     vcfg = cfg.verifier
+    model = model or cfg.model("verifier")
     result = llm.claude(
         render_case(ticket, spec, gate_text, diff),
-        model=model or cfg.model("verifier"),
+        model=model,
         cwd=WORK,
         tools=[],
         max_turns=4,
@@ -138,6 +141,7 @@ def verify(cfg, ticket, spec, gate_text, diff, record=None, model=None):
         system_prompt=(PROMPTS / "verifier.md").read_text(),
         timeout=900,
         record=record,
+        enforce_limits=enforced_for_verifier(cfg, model, confirm),
     )
     cost = float(result.get("total_cost_usd") or 0)
     if result.get("kind") in llm.INTERRUPTED:
@@ -145,7 +149,7 @@ def verify(cfg, ticket, spec, gate_text, diff, record=None, model=None):
     out = result.get("structured_output")
     if not isinstance(out, dict) or not isinstance(out.get("answers"), dict):
         return {"decision": "error", "summary": str(result.get("error") or result.get("result"))[:500]}, cost
-    out["model"] = model or cfg.model("verifier")
+    out["model"] = model
     return decide(out), cost
 
 
@@ -158,7 +162,8 @@ def verify_pipeline(cfg, ticket, spec, gate_text, diff, record_dir=None):
     confirm = cfg.verifier.get("confirm")
     if v["decision"] != "accept" or not confirm:
         return v, cost
-    v2, cost2 = verify(cfg, ticket, spec, gate_text, diff, record=rec("verifier-confirm.json"), model=confirm)
+    v2, cost2 = verify(cfg, ticket, spec, gate_text, diff, record=rec("verifier-confirm.json"), model=confirm,
+                       confirm=True)
     if v2["decision"] in ("interrupted", "error"):
         return v2, cost + cost2
     if ORDER.index(v2["decision"]) > ORDER.index(v["decision"]):

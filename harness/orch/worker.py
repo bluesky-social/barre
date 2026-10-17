@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import llm
 from common import PROMPTS, ROOT, WORK, git, run
 from conformance import BASELINE, read_ids
+from limits import enforced_for_worker
 from policy import matches
 
 SLOTS = WORK / "slots"
@@ -165,6 +166,7 @@ def attempt(cfg, db, ticket, slot, tier, salvage_attempt=None):
         env=env,
         timeout=int(wcfg.get("timeout_minutes", 40)) * 60,
         record=adir / "worker.json",
+        enforce_limits=enforced_for_worker(cfg, tier),
     )
     cost = float(result.get("total_cost_usd") or 0)
     turns = int(result.get("num_turns") or 0)

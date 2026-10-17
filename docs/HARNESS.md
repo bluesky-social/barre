@@ -142,20 +142,49 @@ After `max_attempts`, or a failure at the top tier, it is marked
 Both show up in `./orch status` for the architect to split, rewrite or
 unblock.
 
-Usage limits: every run reports the plan's usage windows. When one passes
-its cap in `[limits]` (default 90% of the 5-hour window, 80% of the 7-day
-one), nothing new starts until that window resets. The pause is printed by
-`./orch status` and survives restarts. A run that hits a limit anyway (or an
-overload) is an interruption, not a failure:
+### Usage limits
+
+Every run reports the plan's usage windows. Requests past the plan's windows
+spill into API billing (through agentgateway), which is fine for cheap work,
+so the policy is per tier (`[limits]` in orch.toml, `harness/orch/limits.py`):
+
+- **Cap pause.** When a window passes its cap (default 90% of the 5-hour
+  window, 80% of the 7-day one) or the plan reports it exhausted, only the
+  *enforced* work stops starting until that window resets:
+  - worker attempts at a tier in `enforce_tiers` (default `["sonnet",
+    "opus"]`): the claim loop skips tickets at those tiers (their current,
+    possibly escalated, tier) and keeps handing out the rest;
+  - the screening verifier, if its model is one of those tiers (it is Haiku,
+    so it never waits);
+  - the confirming verifier, if `enforce_verifier_confirm` (default `false`:
+    the Sonnet confirm is small and on the merge path, and holding it would
+    starve the Haiku grind of merges).
+
+  Haiku work never pauses. With `enforce_tiers` unset, every tier is
+  enforced (kahvi's behaviour). When only paused-tier tickets are left, the
+  loop waits for the reset, re-reading the ticket files every minute.
+- **Hard pause.** An actual rate-limit or overload error from the API holds
+  everything, with backoff, as before.
+
+`./orch status` prints both: `PAUSED (all tiers) until ...` for a hard pause,
+`paused tiers: sonnet, opus until ...; still running: haiku` for a cap pause,
+and the policy in force. Pauses survive restarts.
+
+A run that hits a limit anyway (or an overload) is an interruption, not a
+failure:
 - the attempt doesn't count against the ticket;
 - its partial diff seeds the next attempt;
 - an attempt cut off during verification resumes at verification.
+
+A run that finished is never an interruption, even if the plan reported its
+window exhausted during it (that request was API-billed).
 
 If the CLI is logged out, the orchestrator stops and says so.
 
 Other commands:
 
-- `./orch status`: tickets by status, any pause and the plan's usage, spend
+- `./orch status`: tickets by status, any pause (all tiers, or which tiers)
+  and the usage-limit policy, the plan's usage, spend
   (workers and verifier), outcomes per tier, and dollars per new conformance
   pass.
 - `./orch show N`: an attempt's prompt, gate report, verifier answers, merge
@@ -174,7 +203,8 @@ Configuration is in `harness/orch.toml`. Per-machine overrides go in
 `work/orch.local.toml`, for example `slots = 8` or a different verifier model.
 `BARRE_WORK=/some/dir` runs a separate orchestrator with its own state.
 `python3 harness/orch/selftest.py` checks the pieces that need no model and
-no engine (spec lookups, lint rules, result normalisation, ticket parsing).
+no engine (spec lookups, lint rules, result normalisation, ticket parsing, the
+usage-limit policy, the red-team cases).
 
 ## Policy (`harness/orch/policy.py`)
 

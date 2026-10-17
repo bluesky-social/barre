@@ -2,7 +2,7 @@
 subscription login, whichever the `claude` CLI is configured with.
 
 Every run goes through the shared `LIMITS` (set by the CLI): it waits out
-pauses before starting, reports the plan's usage windows afterwards, and
+pauses that apply to it before starting (limits.py: per-tier policy), reports the plan's usage windows afterwards, and
 classifies failures so callers can tell "the work failed" from "the
 infrastructure stopped us" (`result["kind"]`).
 """
@@ -26,12 +26,14 @@ AUTH_RX = re.compile(r"invalid api key|/login|not logged in|authentication_error
 
 
 def classify(result, rate_info, stderr=""):
-    """Returns (kind, resets_at) for a finished run."""
-    if rate_info and not str(rate_info.get("status") or "allowed").startswith("allowed"):
-        return "rate-limited", rate_info.get("resetsAt")
+    """Returns (kind, resets_at) for a finished run. A run that finished is
+    not an interruption even if the plan reported its window exhausted: past
+    the plan's windows, requests spill into API billing (limits.py)."""
     subtype = str(result.get("subtype") or "")
     if not result.get("is_error") and subtype in ("", "success"):
         return None, None
+    if rate_info and not str(rate_info.get("status") or "allowed").startswith("allowed"):
+        return "rate-limited", rate_info.get("resetsAt")
     if subtype.startswith("error_max"):
         return "exhausted", None
     text = " ".join(str(result.get(k) or "") for k in ("result", "error", "terminal_reason")) + " " + stderr[-2000:]
@@ -64,10 +66,13 @@ def claude(
     env=None,
     timeout=3600,
     record=None,
+    enforce_limits=True,
 ):
     """Runs one headless session and returns its result event, plus `kind`
-    (see above) and `rate_limit_info`. `record` is a path to save it to."""
-    if LIMITS is not None and not LIMITS.wait():
+    (see above) and `rate_limit_info`. `record` is a path to save it to.
+    `enforce_limits`: whether this run waits out a cap pause (limits.py); a
+    hard pause holds every run."""
+    if LIMITS is not None and not LIMITS.wait(enforce=enforce_limits):
         return {"is_error": True, "kind": "stopped", "error": LIMITS.fatal, "total_cost_usd": 0.0, "num_turns": 0}
     cmd = [
         "claude", "-p",

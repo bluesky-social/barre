@@ -28,7 +28,7 @@ from common import WORK, git, load_config, log, read_json
 from db import DB
 
 STOP_FILE = WORK / "stop"
-from limits import Limits
+from limits import ALL_TIERS, Limits, enforce_tiers
 
 
 def cmd_run(args):
@@ -80,6 +80,7 @@ def cmd_run(args):
                 a["id"], "", a["base"], a["head"], 0.0, 0, None, None, str(pipeline.worker.ATTEMPTS / str(a["id"]))),
                 "accept")
     started = 0
+    capped_note = 0.0
     STOP_FILE.unlink(missing_ok=True)
     with cf.ThreadPoolExecutor(cfg.slots) as ex:
         free = list(range(cfg.slots))
@@ -90,13 +91,15 @@ def cmd_run(args):
                 db.sync_tickets(pool)
             except ValueError as e:
                 log(f"ticket files invalid, keeping the previous set: {e}")
-            # While paused (usage limits) nothing new starts; running work finishes or
-            # waits inside its next model call.
+            # A hard pause (rate-limit or overload errors) holds everything;
+            # a cap pause (a usage window past its cap) holds only the
+            # enforced tiers (limits.py), so haiku tickets keep flowing.
+            # Running work finishes or waits inside its next model call.
             stopping = STOP_FILE.exists()
-            while free and not stopping and not limits.fatal and not limits.paused() and (
+            while free and not stopping and not limits.fatal and not limits.blocked() and (
                 args.max_attempts is None or started < args.max_attempts
             ):
-                t = db.claim_next(pool, only)
+                t = db.claim_next(pool, only, skip_tiers=limits.paused_tiers())
                 if t is None:
                     break
                 slot = free.pop()
@@ -110,9 +113,19 @@ def cmd_run(args):
             if not running:
                 if limits.fatal or stopping:
                     break
-                if limits.paused():
+                if limits.blocked():
                     if not limits.wait():
                         break
+                    continue
+                held = limits.paused_tiers()
+                if held and db.ready_count(pool, only, held):
+                    # Only tickets at paused tiers are left: wait for the
+                    # window to reset, re-reading the ticket files meanwhile.
+                    if time.time() - capped_note > 900:
+                        log(f"only {', '.join(sorted(held))} tickets are ready and those tiers are paused "
+                            f"for {limits.remaining() / 60:.0f} more minutes: {limits.cap_reason()}")
+                        capped_note = time.time()
+                    time.sleep(min(60, max(1, limits.remaining())))
                     continue
                 break
             done, _ = cf.wait(running, timeout=60, return_when=cf.FIRST_COMPLETED)
@@ -195,9 +208,23 @@ def cmd_status(args):
         outcomes = Counter((a["tier"], a["outcome"]) for a in att)
         for (tier, outcome), n in sorted(outcomes.items(), key=lambda x: (x[0][0], str(x[0][1]))):
             print(f"  {tier:<7} {str(outcome):<12} {n}")
+    cfg = load_config()
     paused = float(db.kv_get("paused_until") or 0)
     if paused > time.time():
-        print(f"PAUSED until {time.strftime('%Y-%m-%d %H:%M', time.localtime(paused))}: {db.kv_get('pause_reason')}")
+        print(f"PAUSED (all tiers) until {time.strftime('%Y-%m-%d %H:%M', time.localtime(paused))}: "
+              f"{db.kv_get('pause_reason')}")
+    capped = float(db.kv_get("cap_paused_until") or 0)
+    tiers = sorted(enforce_tiers(cfg))
+    confirm = cfg.limits.get("enforce_verifier_confirm", True)
+    held = tiers + (["verifier confirm"] if confirm else [])
+    if capped > time.time() and held:
+        free = [t for t in ALL_TIERS if t not in tiers]
+        print(f"paused tiers: {', '.join(held)} until {time.strftime('%Y-%m-%d %H:%M', time.localtime(capped))}: "
+              f"{db.kv_get('cap_pause_reason')}" + (f"; still running: {', '.join(free)}" if free else ""))
+    print(f"usage-limit policy: pauses {', '.join(held) or 'nothing'} when a window passes its cap"
+          + ("" if not [t for t in ALL_TIERS if t not in tiers] else
+             f"; {', '.join(t for t in ALL_TIERS if t not in tiers)} work never pauses "
+             f"(past the plan's windows it is API-billed)"))
     info = db.kv_get("limits")
     if info:
         info = json.loads(info)

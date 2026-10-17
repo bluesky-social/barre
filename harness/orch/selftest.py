@@ -174,6 +174,36 @@ def test_tickets():
           "T-0042" not in tickets.load_all(), "EXAMPLE is not loaded")
 
 
+def test_limits():
+    import time
+    import tickets
+    from common import Config
+    from db import DB
+    from limits import Limits, enforced_for_verifier, enforced_for_worker
+    cfg = Config(models={"haiku": "h", "sonnet": "s", "opus": "o", "verifier": "h"}, verifier={"confirm": "s"},
+                 limits={"enforce_tiers": ["sonnet", "opus"], "enforce_verifier_confirm": False})
+    check(not enforced_for_worker(cfg, "haiku") and enforced_for_worker(cfg, "opus"), "worker tiers")
+    check(not enforced_for_verifier(cfg, "h", False) and not enforced_for_verifier(cfg, "s", True), "verifier policy")
+    kahvi = Config(models=cfg.models, verifier=cfg.verifier, limits={})
+    check(enforced_for_worker(kahvi, "haiku") and enforced_for_verifier(kahvi, "s", True), "default enforces all")
+    with tempfile.TemporaryDirectory() as d:
+        db = DB(Path(d) / "state.db")
+        lim = Limits(cfg, db)
+        lim.observe({"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.95,
+                                                                           "resetsAt": time.time() + 3600}}})
+        check(lim.capped() and not lim.blocked(), "a window over its cap is a cap pause")
+        check(lim.paused_tiers() == {"sonnet", "opus"} and lim.remaining(enforce=False) == 0, "haiku is not held")
+        pool = {"T-1": tickets.Ticket(id="T-1", title="a", scope=["x"], target=["y"], tier="haiku"),
+                "T-2": tickets.Ticket(id="T-2", title="b", scope=["x"], target=["y"], tier="sonnet", priority=5)}
+        db.sync_tickets(pool)
+        got = db.claim_next(pool, skip_tiers=lim.paused_tiers())
+        check(got is not None and got.id == "T-1", "claims past a paused tier")
+        check(db.claim_next(pool, skip_tiers=lim.paused_tiers()) is None and db.ready_count(pool, None, {"sonnet"}) == 1,
+              "the paused-tier ticket waits")
+        lim.hit(time.time() + 100, "429")
+        check(lim.blocked() and lim.paused_tiers() == {"haiku", "sonnet", "opus"}, "an actual limit error holds everything")
+
+
 def test_redteam():
     from calibrate import CASES, build_diff
     from policy import lint
@@ -194,7 +224,7 @@ def test_redteam():
 
 
 def main():
-    for t in (test_spec, test_lint, test_conformance, test_tickets, test_redteam):
+    for t in (test_spec, test_lint, test_conformance, test_tickets, test_limits, test_redteam):
         try:
             t()
         except Exception as e:  # noqa: BLE001

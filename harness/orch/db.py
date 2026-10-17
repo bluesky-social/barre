@@ -90,26 +90,42 @@ class DB:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.q(f"UPDATE tickets SET {cols} WHERE id = ?", *fields.values(), tid)
 
-    def claim_next(self, tickets, only=None):
-        """Atomically picks the best ready ticket and marks it claimed."""
+    def _ready(self, tickets, only, skip_tiers):
+        """Open tickets whose needs are met, best first. A ticket's current
+        tier is the database's (escalation moves it), not the file's."""
+        rows = self.conn.execute("SELECT id, status, tier FROM tickets").fetchall()
+        status = {r["id"]: r["status"] for r in rows}
+        tier = {r["id"]: r["tier"] for r in rows}
+        ready = [
+            t for t in tickets.values()
+            if status.get(t.id) == "open"
+            and t.tier != "architect"
+            and (only is None or t.id in only)
+            and tier.get(t.id) not in skip_tiers
+            and all(status.get(n) in ("done", "stacked") for n in t.needs)
+        ]
+        ready.sort(key=lambda t: (-t.priority, t.id))
+        return ready
+
+    def claim_next(self, tickets, only=None, skip_tiers=()):
+        """Atomically picks the best ready ticket and marks it claimed.
+        Tickets at a tier in `skip_tiers` (paused by usage limits) wait."""
         with self.lock:
-            rows = self.conn.execute("SELECT id, status FROM tickets").fetchall()
-            status = {r["id"]: r["status"] for r in rows}
-            ready = [
-                t for t in tickets.values()
-                if status.get(t.id) == "open"
-                and t.tier != "architect"
-                and (only is None or t.id in only)
-                and all(status.get(n) in ("done", "stacked") for n in t.needs)
-            ]
+            ready = self._ready(tickets, only, set(skip_tiers))
             if not ready:
                 return None
-            ready.sort(key=lambda t: (-t.priority, t.id))
             pick = ready[0]
             self.conn.execute(
                 "UPDATE tickets SET status = 'claimed', updated = ? WHERE id = ?", (time.time(), pick.id)
             )
             return pick
+
+    def ready_count(self, tickets, only=None, tiers=None):
+        """How many tickets are ready to claim (only those at `tiers`, if given)."""
+        with self.lock:
+            ready = self._ready(tickets, only, set())
+        rows = {r["id"]: r["tier"] for r in self.q("SELECT id, tier FROM tickets")}
+        return sum(1 for t in ready if tiers is None or rows.get(t.id) in tiers)
 
     def new_attempt(self, ticket, slot, tier, model, base):
         with self.lock:

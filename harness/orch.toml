@@ -36,9 +36,15 @@ fakery_escalates = true   # a faked result moves the ticket up a tier at once
 max_attempts = 6          # then the ticket goes to the architect
 
 [limits]
-# Subscription plans (Pro/Max) report usage per window. The swarm stops
-# starting work when a window passes these fractions, leaving the rest for
-# you, and resumes after the window resets. Pauses survive restarts.
+# Subscription plans (Pro/Max) report usage per window. When a window passes
+# these fractions (or the plan reports it exhausted), work at the enforced
+# tiers stops starting, leaving the rest for you, and resumes after the window
+# resets. Other work keeps going: past the plan's windows, requests spill into
+# API billing through agentgateway, which is fine for cheap work. Actual
+# rate-limit or overload errors still pause everything, with backoff. Pauses
+# survive restarts. (docs/HARNESS.md, "Usage limits")
+enforce_tiers = ["sonnet", "opus"]   # worker tiers that wait; the haiku grind never does
+enforce_verifier_confirm = false     # the Sonnet confirm is small and on the merge path
 max_five_hour = 0.9
 max_seven_day = 0.8
 max_default = 0.9         # any other window the plan reports
