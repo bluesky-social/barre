@@ -815,29 +815,17 @@ pub fn calculate_available_inner_dimension<'a, N: LayoutNode<'a>>(
     available_inner_dim
 }
 
-/// `computeFlexBasisForChildren`.
-fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
+/// The `singleFlexChild` search at the start of `computeFlexBasisForChildren`.
+///
+/// Factored out of [`compute_flex_basis_for_children`] (barre only, same code)
+/// so that `calculate_layout_internal` can also make the write it leads to for
+/// a call answered from an earlier layout's cache (yoga#2019,
+/// [`write_single_flex_child_basis`]).
+fn find_single_flex_child<'a, N: LayoutNode<'a>>(
     node: N,
-    available_inner_width: f32,
-    available_inner_height: f32,
-    owner_width: f32,
-    owner_height: f32,
-    width_sizing_mode: SizingMode,
-    height_sizing_mode: SizingMode,
-    direction: Direction,
-    main_axis: FlexDirection,
-    perform_layout: bool,
-    layout_marker_data: &mut LayoutData,
-    depth: u32,
-    generation_count: u32,
-) -> f32 {
-    let mut total_outer_flex_basis = 0.0f32;
+    sizing_mode_main_dim: SizingMode,
+) -> Option<N> {
     let mut single_flex_child: Option<N> = None;
-    let sizing_mode_main_dim = if is_row(main_axis) {
-        width_sizing_mode
-    } else {
-        height_sizing_mode
-    };
     // If there is only one child with flexGrow + flexShrink it means we can
     // set the computedFlexBasis to 0 instead of measuring and shrinking /
     // flexing the child to exactly match the remaining space
@@ -858,6 +846,48 @@ fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
             }
         }
     }
+    single_flex_child
+}
+
+/// barre-only (yoga#2019), no Yoga counterpart: the flex-basis write a run of
+/// `node` with a `StretchFit` main axis makes through
+/// [`compute_flex_basis_for_children`]'s `singleFlexChild` shortcut (a basis
+/// of 0 for the single flex child, stamped with `generation_count`), for a
+/// call that was answered from an earlier layout's cache entry instead.
+fn write_single_flex_child_basis<'a, N: LayoutNode<'a>>(node: N, generation_count: u32) {
+    if let Some(child) = find_single_flex_child(node, SizingMode::StretchFit) {
+        // `compute_flex_basis_for_children` skips a `display: none` child
+        // before the write.
+        if child.style().display() != Display::None {
+            child.set_layout_computed_flex_basis_generation(generation_count);
+            child.set_layout_computed_flex_basis(0.0);
+        }
+    }
+}
+
+/// `computeFlexBasisForChildren`.
+fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_inner_width: f32,
+    available_inner_height: f32,
+    owner_width: f32,
+    owner_height: f32,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    direction: Direction,
+    main_axis: FlexDirection,
+    perform_layout: bool,
+    layout_marker_data: &mut LayoutData,
+    depth: u32,
+    generation_count: u32,
+) -> f32 {
+    let mut total_outer_flex_basis = 0.0f32;
+    let sizing_mode_main_dim = if is_row(main_axis) {
+        width_sizing_mode
+    } else {
+        height_sizing_mode
+    };
+    let single_flex_child = find_single_flex_child(node, sizing_mode_main_dim);
 
     for child in node.layout_children() {
         child.process_dimensions();
@@ -3153,6 +3183,51 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
     }
 }
 
+/// barre-only (yoga#2019), no Yoga counterpart: whether a run of `node` (with
+/// layout children and no measure function) for this call would reach
+/// `compute_flex_basis_for_children` with a `StretchFit` main axis and find a
+/// single flex child there, that is, give it a basis of 0. A measure-only call
+/// whose two sizes are fixed returns before that
+/// (`measure_node_with_fixed_size`, the same test on the same margins).
+fn is_single_flex_child_call<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_width: f32,
+    available_height: f32,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    owner_direction: Direction,
+    owner_width: f32,
+    perform_layout: bool,
+) -> bool {
+    let style = node.style();
+    let main_axis_sizing_mode = if is_row(style.flex_direction()) {
+        width_sizing_mode
+    } else {
+        height_sizing_mode
+    };
+    if main_axis_sizing_mode != SizingMode::StretchFit {
+        return false;
+    }
+    if !perform_layout {
+        // The margins as `calculate_layout_impl` computes them.
+        let direction = node.resolve_direction(owner_direction);
+        let flex_row_direction = resolve_direction(FlexDirection::Row, direction);
+        let flex_column_direction = resolve_direction(FlexDirection::Column, direction);
+        let margin_axis_row =
+            style.compute_inline_start_margin(flex_row_direction, direction, owner_width)
+                + style.compute_inline_end_margin(flex_row_direction, direction, owner_width);
+        let margin_axis_column =
+            style.compute_inline_start_margin(flex_column_direction, direction, owner_width)
+                + style.compute_inline_end_margin(flex_column_direction, direction, owner_width);
+        if is_fixed_size(available_width - margin_axis_row, width_sizing_mode)
+            && is_fixed_size(available_height - margin_axis_column, height_sizing_mode)
+        {
+            return false;
+        }
+    }
+    find_single_flex_child(node, SizingMode::StretchFit).is_some()
+}
+
 /// barre-only (yoga#2019), no Yoga counterpart: the cache entry a lookup hit.
 fn cached_entry(
     layout: &crate::node::layout_results::LayoutResults,
@@ -3284,6 +3359,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         owner_direction,
         reason,
         replay_pending: false,
+        single_flex_child_pending: false,
     };
     let anchor = match stored {
         Some(stored) if !starts_anchor => stored,
@@ -3327,6 +3403,31 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                     replay_pending: true,
                     ..this_call
                 });
+            } else if is_single_flex_child_call(
+                node,
+                available_width,
+                available_height,
+                width_sizing_mode,
+                height_sizing_mode,
+                owner_direction,
+                owner_width,
+                perform_layout,
+            ) {
+                // barre-only (yoga#2019): in a fresh layout this call ran and
+                // its `singleFlexChild` shortcut gave the single flex child a
+                // basis of 0. Make that write now, or right after the pending
+                // replay of the anchor if there is one (a fresh layout ran the
+                // anchor first). Found by the fuzzer,
+                // `barre-only-basis-mode0`.
+                let pending = layout.flex_basis_anchor.get();
+                if pending.generation == generation_count && pending.replay_pending {
+                    layout.flex_basis_anchor.set(FlexBasisAnchor {
+                        single_flex_child_pending: true,
+                        ..pending
+                    });
+                } else {
+                    write_single_flex_child_basis(node, generation_count);
+                }
             }
             // barre-only (yoga#2019): a fresh layout ran this call and stored
             // this entry in this layout, with the anchor in effect now, so
@@ -3368,6 +3469,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             if pending.generation == generation_count && pending.replay_pending {
                 layout.flex_basis_anchor.set(FlexBasisAnchor {
                     replay_pending: false,
+                    single_flex_child_pending: false,
                     ..pending
                 });
                 crate::stat!(|s| {
@@ -3403,6 +3505,9 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                     depth,
                     generation_count,
                 );
+                if pending.single_flex_child_pending {
+                    write_single_flex_child_basis(node, generation_count);
+                }
             }
             if starts_anchor {
                 layout.flex_basis_anchor.set(this_call);
