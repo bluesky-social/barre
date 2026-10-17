@@ -290,7 +290,87 @@ pub static DEFAULT_GRID_STYLE: GridStyle = GridStyle {
     },
 };
 
-type Edges = [StyleLength; 9];
+/// The nine `Edge` values of one box property (margin, position, padding,
+/// border), plus, for speed, which of them `compute_edge` picks for each
+/// direction and physical edge. Yoga walks its fallback chain (start/end,
+/// left/right, horizontal/vertical, all) on every `compute*` call, ~30% of
+/// a fresh layout; barre resolves it once, when a value is set, and
+/// `compute_edge` is two indexed loads. The values returned are the same.
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+struct Edges {
+    values: [StyleLength; 9],
+    /// `resolved[direction as usize][physical_edge as usize]` is the index
+    /// in `values` of the value Yoga's fallback chain picks.
+    resolved: [[u8; 4]; 3],
+}
+
+impl Edges {
+    const UNDEFINED: Edges = Edges {
+        values: [StyleLength::UNDEFINED; 9],
+        // Everything falls back to `Edge::All`.
+        resolved: [[Edge::All as u8; 4]; 3],
+    };
+
+    #[inline]
+    fn get(&self, edge: Edge) -> StyleLength {
+        self.values[edge as usize]
+    }
+
+    #[inline]
+    fn set(&mut self, edge: Edge, value: StyleLength) {
+        self.values[edge as usize] = value.stored();
+        self.resolve();
+    }
+
+    /// Fills `resolved`: [`resolve_edge`]'s fallback chain, evaluated once
+    /// per shorthand rather than once per entry.
+    fn resolve(&mut self) {
+        let defined = |e: Edge| self.values[e as usize].is_defined();
+        let pick = |e: Edge, fallback: Edge| if defined(e) { e } else { fallback };
+        let horizontal = pick(Edge::Horizontal, Edge::All);
+        let vertical = pick(Edge::Vertical, Edge::All);
+        let left = pick(Edge::Left, horizontal);
+        let right = pick(Edge::Right, horizontal);
+        let top = pick(Edge::Top, vertical) as u8;
+        let bottom = pick(Edge::Bottom, vertical) as u8;
+        let start = pick(Edge::Start, Edge::All);
+        let end = pick(Edge::End, Edge::All);
+        let or = |e: Edge, fallback: Edge| if e == Edge::All { fallback } else { e } as u8;
+        self.resolved[Direction::Inherit as usize] = [left as u8, top, right as u8, bottom];
+        self.resolved[Direction::LTR as usize] = [or(start, left), top, or(end, right), bottom];
+        self.resolved[Direction::RTL as usize] = [or(end, left), top, or(start, right), bottom];
+        #[cfg(debug_assertions)]
+        for direction in [Direction::Inherit, Direction::LTR, Direction::RTL] {
+            for physical in [
+                PhysicalEdge::Left,
+                PhysicalEdge::Top,
+                PhysicalEdge::Right,
+                PhysicalEdge::Bottom,
+            ] {
+                debug_assert_eq!(
+                    self.resolved[direction as usize][physical.index()],
+                    resolve_edge(&self.values, physical, direction) as u8
+                );
+            }
+        }
+    }
+
+    /// `Style::computeLeftEdge` / `computeTopEdge` / `computeRightEdge` /
+    /// `computeBottomEdge`, through the table.
+    #[inline]
+    fn compute(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
+        let index = self.resolved[direction as usize][edge.index()];
+        self.values[index as usize]
+    }
+}
+
+impl PartialEq for Edges {
+    fn eq(&self, other: &Edges) -> bool {
+        // `resolved` is derived from `values`.
+        self.values == other.values
+    }
+}
 
 /// `yoga::Style` (without the grid properties; see the module docs).
 #[derive(Copy, Clone, Debug)]
@@ -386,10 +466,10 @@ impl Style {
             flex_shrink: f32::NAN,
             aspect_ratio: f32::NAN,
             flex_basis: StyleLength::AUTO,
-            margin: [StyleLength::UNDEFINED; 9],
-            position: [StyleLength::UNDEFINED; 9],
-            padding: [StyleLength::UNDEFINED; 9],
-            border: [StyleLength::UNDEFINED; 9],
+            margin: Edges::UNDEFINED,
+            position: Edges::UNDEFINED,
+            padding: Edges::UNDEFINED,
+            border: Edges::UNDEFINED,
             gap: [StyleLength::UNDEFINED; 3],
             dimensions: [StyleLength::AUTO; 2],
             min_dimensions: [StyleLength::UNDEFINED; 2],
@@ -441,35 +521,35 @@ impl Style {
 
     #[inline]
     pub fn margin(&self, edge: Edge) -> StyleLength {
-        self.margin[edge as usize]
+        self.margin.get(edge)
     }
     #[inline]
     pub fn set_margin(&mut self, edge: Edge, value: StyleLength) {
-        self.margin[edge as usize] = value.stored();
+        self.margin.set(edge, value);
     }
     #[inline]
     pub fn position(&self, edge: Edge) -> StyleLength {
-        self.position[edge as usize]
+        self.position.get(edge)
     }
     #[inline]
     pub fn set_position(&mut self, edge: Edge, value: StyleLength) {
-        self.position[edge as usize] = value.stored();
+        self.position.set(edge, value);
     }
     #[inline]
     pub fn padding(&self, edge: Edge) -> StyleLength {
-        self.padding[edge as usize]
+        self.padding.get(edge)
     }
     #[inline]
     pub fn set_padding(&mut self, edge: Edge, value: StyleLength) {
-        self.padding[edge as usize] = value.stored();
+        self.padding.set(edge, value);
     }
     #[inline]
     pub fn border(&self, edge: Edge) -> StyleLength {
-        self.border[edge as usize]
+        self.border.get(edge)
     }
     #[inline]
     pub fn set_border(&mut self, edge: Edge, value: StyleLength) {
-        self.border[edge as usize] = value.stored();
+        self.border.set(edge, value);
     }
     #[inline]
     pub fn gap(&self, gutter: Gutter) -> StyleLength {
@@ -586,20 +666,20 @@ impl Style {
 
     /// `Style::horizontalInsetsDefined`.
     pub fn horizontal_insets_defined(&self) -> bool {
-        self.position[Edge::Left as usize].is_defined()
-            || self.position[Edge::Right as usize].is_defined()
-            || self.position[Edge::All as usize].is_defined()
-            || self.position[Edge::Horizontal as usize].is_defined()
-            || self.position[Edge::Start as usize].is_defined()
-            || self.position[Edge::End as usize].is_defined()
+        self.position.get(Edge::Left).is_defined()
+            || self.position.get(Edge::Right).is_defined()
+            || self.position.get(Edge::All).is_defined()
+            || self.position.get(Edge::Horizontal).is_defined()
+            || self.position.get(Edge::Start).is_defined()
+            || self.position.get(Edge::End).is_defined()
     }
 
     /// `Style::verticalInsetsDefined`.
     pub fn vertical_insets_defined(&self) -> bool {
-        self.position[Edge::Top as usize].is_defined()
-            || self.position[Edge::Bottom as usize].is_defined()
-            || self.position[Edge::All as usize].is_defined()
-            || self.position[Edge::Vertical as usize].is_defined()
+        self.position.get(Edge::Top).is_defined()
+            || self.position.get(Edge::Bottom).is_defined()
+            || self.position.get(Edge::All).is_defined()
+            || self.position.get(Edge::Vertical).is_defined()
     }
 
     /// `Style::isFlexStartPositionDefined`.
@@ -978,22 +1058,22 @@ impl Style {
     /// `Style::computePosition`.
     #[inline]
     pub fn compute_position(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
-        compute_edge(&self.position, edge, direction)
+        self.position.compute(edge, direction)
     }
     /// `Style::computeMargin`.
     #[inline]
     pub fn compute_margin(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
-        compute_edge(&self.margin, edge, direction)
+        self.margin.compute(edge, direction)
     }
     /// `Style::computePadding`.
     #[inline]
     pub fn compute_padding(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
-        compute_edge(&self.padding, edge, direction)
+        self.padding.compute(edge, direction)
     }
     /// `Style::computeBorder`.
     #[inline]
     pub fn compute_border(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
-        compute_edge(&self.border, edge, direction)
+        self.border.compute(edge, direction)
     }
 }
 
@@ -1035,54 +1115,55 @@ fn or_zero(value: f32) -> f32 {
 }
 
 /// `Style::computeLeftEdge` / `computeTopEdge` / `computeRightEdge` /
-/// `computeBottomEdge`: the style value that applies to a physical edge,
-/// falling back from the specific edge through the shorthands.
-#[inline]
-fn compute_edge(edges: &Edges, edge: PhysicalEdge, direction: Direction) -> StyleLength {
+/// `computeBottomEdge`: which style value applies to a physical edge,
+/// falling back from the specific edge through the shorthands (see
+/// [`Edges`]). Only used to check [`Edges::resolve`] in debug builds.
+#[cfg(debug_assertions)]
+fn resolve_edge(edges: &[StyleLength; 9], edge: PhysicalEdge, direction: Direction) -> Edge {
     let e = |e: Edge| edges[e as usize];
     match edge {
         PhysicalEdge::Left => {
             if direction == Direction::LTR && e(Edge::Start).is_defined() {
-                e(Edge::Start)
+                Edge::Start
             } else if direction == Direction::RTL && e(Edge::End).is_defined() {
-                e(Edge::End)
+                Edge::End
             } else if e(Edge::Left).is_defined() {
-                e(Edge::Left)
+                Edge::Left
             } else if e(Edge::Horizontal).is_defined() {
-                e(Edge::Horizontal)
+                Edge::Horizontal
             } else {
-                e(Edge::All)
+                Edge::All
             }
         }
         PhysicalEdge::Top => {
             if e(Edge::Top).is_defined() {
-                e(Edge::Top)
+                Edge::Top
             } else if e(Edge::Vertical).is_defined() {
-                e(Edge::Vertical)
+                Edge::Vertical
             } else {
-                e(Edge::All)
+                Edge::All
             }
         }
         PhysicalEdge::Right => {
             if direction == Direction::LTR && e(Edge::End).is_defined() {
-                e(Edge::End)
+                Edge::End
             } else if direction == Direction::RTL && e(Edge::Start).is_defined() {
-                e(Edge::Start)
+                Edge::Start
             } else if e(Edge::Right).is_defined() {
-                e(Edge::Right)
+                Edge::Right
             } else if e(Edge::Horizontal).is_defined() {
-                e(Edge::Horizontal)
+                Edge::Horizontal
             } else {
-                e(Edge::All)
+                Edge::All
             }
         }
         PhysicalEdge::Bottom => {
             if e(Edge::Bottom).is_defined() {
-                e(Edge::Bottom)
+                Edge::Bottom
             } else if e(Edge::Vertical).is_defined() {
-                e(Edge::Vertical)
+                Edge::Vertical
             } else {
-                e(Edge::All)
+                Edge::All
             }
         }
     }
