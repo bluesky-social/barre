@@ -14,7 +14,19 @@ bench/run rn/feed50 capture/   # name-prefix filter
 bench/run --rev HEAD~3         # benchmark another barre commit
 bench/run --worktree           # the live working tree instead of a commit
 bench/profile rn/feed50/fresh  # samply profile of barre, hotspot tables
+bench/run --rn                 # + RN's patched Yoga with barre-rn, switch off/on
+bench/profile rn/feed50/fresh --engine rn-barre -- --rn
 ```
+
+`--rn` (milestone 5, docs/RN-SHIM.md) adds a third binary: React Native
+0.88's `ReactCommon/yoga` with `rn/patches/` applied (the tree `./conf
+--engine rn-*` uses), the benchmark compiled against its headers, and
+`crates/barre-rn` (same cargo flags as barre-ffi), run with the layout
+switch off (`rn-yoga`) and on (`rn-barre`, `BARRE_LAYOUT=1`; each run checks
+the switch took). The table's ratios: `rn-barre/rn-yoga` is the in-app A/B,
+`rn-barre/barre` the cost of the host interface over RN's C++ nodes against
+barre's own C ABI, `rn-yoga/yoga` the cost of the patch (and version skew)
+on Yoga. Results and their analysis: docs/RN-SHIM.md, "Phase A".
 
 Latest full run: [`bench/results/latest.md`](../bench/results/latest.md).
 Raw results (`bench/results/*.json`, `*.md`) are gitignored except
