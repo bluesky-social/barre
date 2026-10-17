@@ -233,3 +233,13 @@ calls (2048 at depth 10, 2097152 at 20).
 | `measure_calls_bounded_at_depth_20` | fails | calls <= 16 * depth^2 |
 | `deep_chain_completes_with_right_layout` | times out | the issue's repro at depth 26 (10 s timeout) |
 | `shallow_chain_layout` | passes | the expected layout at depth 6 |
+
+## YGStaleFlexBasisSiblingsTest (yoga#2019 family)
+
+Two `flex: 1` text siblings (2000pt and 800pt of text) inside two plain wrappers under a scroll
+view, laid out at 400x800, 800x400, then 400x800 again. On Yoga at the pin, the first text comes
+back 90 tall instead of the fresh layout's 100 after rotating back, and its sibling is placed
+accordingly: the same stale `computedFlexBasis` as YGStaleFlexBasisTest. Found by the T-0006
+fuzzer; it also rejects the shortcut fix of writing the resolved basis when the stored one is
+stale. Asserts relayout == fresh layout at every step, with Yoga's default config and with RN's
+(point scale 3, YGErrataAll).

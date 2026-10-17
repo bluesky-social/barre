@@ -55,3 +55,5 @@ barre/YGCachedMeasurementMinMaxTest/YGCachedMeasurementMinMaxTest.inner_parent_h
 barre/YGMinContentRecursionTest/YGMinContentRecursionTest.measure_calls_polynomial_in_depth  yoga#2007: 2048 measure calls at depth 10, 2097152 at depth 20 (2^(depth+1))
 barre/YGMinContentRecursionTest/YGMinContentRecursionTest.measure_calls_bounded_at_depth_20  yoga#2007: 2097152 measure calls at depth 20
 barre/YGMinContentRecursionTest/YGMinContentRecursionTest.deep_chain_completes_with_right_layout  yoga#2007: a 26-deep chain of rows times out (10 s)
+barre/YGStaleFlexBasisSiblingsTest/YGStaleFlexBasisSiblingsTest.two_texts_rotate_and_back  yoga#2019 family: flex:1 text siblings keep stale bases after rotate-and-back
+barre/YGStaleFlexBasisSiblingsTest/YGStaleFlexBasisSiblingsTest.two_texts_rotate_and_back_rn_config  yoga#2019 family: flex:1 text siblings keep stale bases after rotate-and-back
