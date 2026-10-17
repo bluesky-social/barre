@@ -1,0 +1,153 @@
+name: CI
+
+# Pull requests against any base: the stacker's layers (docs/STACKS.md) are
+# PRs on the layer below, not on main.
+#
+# Public repo: pull requests (including forks) only ever get a read-only
+# token. The one job that writes (the README rows) runs on pushes to main
+# only, and runs no code from the pushed tree beyond .github/scripts.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  # What every job tests: the PR head itself rather than GitHub's merge with
+  # the base, so a stacked layer is held to its own expected-pass.txt.
+  CHECKOUT_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  rust:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+      - run: git submodule update --init --depth 1 vendor/yoga
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all --check
+      # Same flags as the orchestrator's clippy gate ([gate] in harness/orch.toml).
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  # The check the stacker waits on. Yoga's gtest suite, unmodified, against
+  # barre's C ABI (./conf, docs/CONFORMANCE.md), held to the PR head's
+  # conformance/expected-pass.txt. Its artifact conf-results holds
+  # results.jsonl, summary.json and expected-pass.txt (the pass set the layer
+  # above must keep; .github/scripts/conf_results.py). macOS arm64, like the
+  # machine the baseline is written on: Yoga's FMA divergence (yoga#2038)
+  # depends on the compiler and target.
+  conformance:
+    name: conformance
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+      - run: git submodule update --init --depth 1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: command -v ninja || brew install ninja
+      # Exit 1 on any regression against the baseline, 3 if the canaries say
+      # the run is invalid, 2 if the runner itself could not build. A compile
+      # error in barre is the change's fault and is recorded as such; any
+      # other failure leaves no results, which the stacker treats as CI's.
+      - name: Full suite against the baseline
+        run: |
+          mkdir -p conf-results
+          cp conformance/expected-pass.txt conf-results/expected-pass.txt
+          if ! cargo build -q -p barre-ffi; then
+            .github/scripts/conf_results.py conf-results --build-failed
+            exit 1
+          fi
+          code=0
+          ./conf --quiet --show 30 --json conf.json --summary-json conf-summary.json \
+            --baseline conf-results/expected-pass.txt --update-expected | tee conf.log || code=$?
+          if ! .github/scripts/conf_results.py conf-results --json conf.json --summary conf-summary.json; then
+            [ "$code" -ne 0 ] || code=1
+          fi
+          { echo '```'; cat conf.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: conf-results
+          path: conf-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # The runner's self-check: the same suite linked against real Yoga must
+  # pass everything in scope, with every documented Yoga bug
+  # (conformance/yoga-divergences.txt) failing as xfail. Not a gate for
+  # swarm layers (workers cannot touch the runner, the suite or the pin).
+  yoga:
+    name: runner self-check (real Yoga)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.CHECKOUT_REF }}
+      - run: git submodule update --init --depth 1
+      - run: command -v ninja || brew install ninja
+      - name: Suite against real Yoga
+        run: |
+          code=0
+          ./conf --yoga --quiet --show 30 --json yoga.json --summary-json yoga-summary.json | tee yoga.log || code=$?
+          if ! .github/scripts/conf_results.py yoga-results --json yoga.json --summary yoga-summary.json; then
+            [ "$code" -ne 0 ] || code=1
+          fi
+          { echo '```'; cat yoga.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$code"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: yoga-results
+          path: yoga-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Keeps the README's results rows current. Runs even when a suite failed
+  # (the numbers are still real), but readme_results.py refuses to publish a
+  # run the canaries call invalid. Pushes made with GITHUB_TOKEN do not
+  # trigger another workflow run, and the commit says [skip ci] besides.
+  readme:
+    name: update README results
+    needs: [conformance, yoga]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: conf-results
+          path: conf-results
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: yoga-results
+          path: yoga-results
+      - run: |
+          .github/scripts/readme_commit.sh "README: update conformance results [skip ci]" \
+            .github/scripts/readme_results.py README.md --barre conf-results --yoga yoga-results

@@ -1,0 +1,107 @@
+name: Bench
+
+# barre against Yoga through the same C API (bench/run, docs/BENCH.md), on
+# every push to main and on demand. A run on main adds its results to the
+# bench-results branch, whose README.md is the history
+# (.github/scripts/bench_publish.py), and puts the table in this repo's
+# README. PRs labelled `bench` run it too and get the table in their job
+# summary, without publishing (and with a read-only token).
+#
+# bench/run is macOS-only (QoS class, -object_path_lto, -dead_strip), and
+# its numbers come from a shared GitHub-hosted arm64 runner: noisier than a
+# workstation, so read ratios under ~10% as noise.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+
+jobs:
+  bench:
+    name: barre vs Yoga
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'bench')
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - run: git submodule update --init --depth 1 vendor/yoga
+      - uses: dtolnay/rust-toolchain@stable
+      - run: command -v ninja || brew install ninja
+      # The full run: every workload, 5 interleaved rounds. bench/run builds
+      # barre from `git archive HEAD`, so only committed code is measured.
+      - name: run
+        run: |
+          bench/run --no-latest > bench-raw.md
+          json=$(ls -t bench/results/*.json | head -1)
+          mkdir -p out
+          cp "$json" out/bench.json
+          # Drop bench/run's title line; the README and the history add their own.
+          sed '1{/^# /d;}' bench-raw.md > out/bench.md
+          cat out/bench.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bench-results
+          path: out/
+          retention-days: 30
+
+  publish:
+    name: publish benchmarks
+    needs: bench
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bench-results
+          path: out
+      - name: publish to bench-results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch -q origin bench-results; then
+            git worktree add results-branch origin/bench-results
+            git -C results-branch checkout -q -B bench-results
+          else
+            git worktree add --detach results-branch
+            git -C results-branch checkout -q --orphan bench-results
+            git -C results-branch rm -rfq .
+          fi
+          .github/scripts/bench_publish.py out/bench.json out/bench.md results-branch \
+            --sha "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY"
+          git -C results-branch add -A
+          git -C results-branch commit -qm "bench: results for ${GITHUB_SHA::10}"
+          git -C results-branch push -q origin bench-results
+      # The latest table also goes in the README, under the results rows.
+      - name: Update README
+        run: |
+          {
+            echo "Benchmarks from the last run on main ($(date -u +%F), barre [\`${GITHUB_SHA::10}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}), GitHub-hosted macOS arm64 runner):"
+            echo "time per \`YGNodeCalculateLayout\` through the same C API, Yoga built as React Native builds it; **barre/yoga below 1 means barre is faster**."
+            echo "Shared runners are noisy (treat differences under ~10% as noise). A **MISMATCH** is a layout that differs from Yoga's,"
+            echo "expected where Yoga's compiler contracts float operations into FMA ([yoga#2038](conformance/divergences.md#yoga2038-flexshrink-runaway-from-an-fma-residual), docs/PLAN.md)."
+            echo "History: the [bench-results](https://github.com/${GITHUB_REPOSITORY}/tree/bench-results) branch; methodology: [docs/BENCH.md](docs/BENCH.md)."
+            echo
+            cat out/bench.md
+          } > bench-readme.md
+          .github/scripts/readme_commit.sh "README: update benchmark results [skip ci]" \
+            .github/scripts/readme_section.py benchmarks bench-readme.md README.md
