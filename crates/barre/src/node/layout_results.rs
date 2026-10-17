@@ -24,8 +24,18 @@ use crate::style::{StyleLength, StyleSizeLength};
 /// `calculate_layout_internal` can refuse an earlier layout's entry whose
 /// run read children's bases retained under a different anchor. The four
 /// sizing modes are grouped so `repr(C)` adds no padding; the struct grows
-/// from 20 to 32 bytes (`size_of`, asserted below). T-0010 extends this
-/// struct with owner sizes.
+/// from 20 to 32 bytes.
+///
+/// Deliberately differs from Yoga (yoga#1626, yoga#1003, yoga#1784): each
+/// entry also records the `owner_width`/`owner_height` it was computed
+/// under, so `calculate_layout_internal` can refuse an entry whose node's
+/// own owner-relative inputs (percent padding and margin, resolved against
+/// the owner width, yoga#1626 and yoga#1784; percent min/max, resolved
+/// against the owner width and height, yoga#1003) resolve differently under
+/// the current owner size. These two `f32`s add 8 bytes, for 40 in total
+/// (`size_of`, asserted below). The anchor's owner sizes (`FlexBasisAnchor`)
+/// are those of the anchor call, not of this entry's call, so they cannot be
+/// reused here.
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct CachedMeasurement {
@@ -33,6 +43,10 @@ pub struct CachedMeasurement {
     pub available_height: f32,
     pub computed_width: f32,
     pub computed_height: f32,
+    /// Owner sizes of the call that stored this entry (yoga#1626, #1003,
+    /// #1784).
+    pub owner_width: f32,
+    pub owner_height: f32,
     /// Generation of the layout whose run stored this entry.
     pub generation: u32,
     /// Available sizes of the flex-basis anchor in effect for that run.
@@ -52,6 +66,8 @@ impl Default for CachedMeasurement {
             available_height: -1.0,
             computed_width: -1.0,
             computed_height: -1.0,
+            owner_width: f32::NAN,
+            owner_height: f32::NAN,
             generation: 0,
             anchor_available_width: f32::NAN,
             anchor_available_height: f32::NAN,
@@ -104,7 +120,7 @@ impl Default for FlexBasisAnchor {
     }
 }
 
-const _: () = assert!(std::mem::size_of::<CachedMeasurement>() == 32);
+const _: () = assert!(std::mem::size_of::<CachedMeasurement>() == 40);
 const _: () = assert!(std::mem::size_of::<FlexBasisAnchor>() == 28);
 
 /// `LayoutResults::MaxCachedMeasurements`. This value was chosen based on
@@ -115,10 +131,10 @@ pub const MAX_CACHED_MEASUREMENTS: usize = 8;
 /// `yoga::Node` itself (`lineIndex_`, `processedDimensions_`).
 ///
 /// Deliberately differs from Yoga (yoga#1552, yoga#2019): it also holds
-/// `flex_basis_anchor`, and each cache entry is 12 bytes larger, so the
-/// struct grows by 9 × 12 + 28 = 136 bytes (`size_of` of the two structs).
-/// Known residuals this does not fix: a node's own percent padding, margin
-/// or min/max resolved against a changed owner size (T-0010); measure-function
+/// `flex_basis_anchor`, and each cache entry is 20 bytes larger (12 for the
+/// anchor, 8 for owner sizes, yoga#1626, #1003, #1784), so the struct grows
+/// by 9 × 20 + 28 = 208 bytes (`size_of` of the two structs).
+/// Known residuals this does not fix: measure-function
 /// leaves reused through `can_use_cached_measurement`'s compatible sizes;
 /// pixel-grid rounding re-applied to cached subtrees; history more than one
 /// level deep (only a node's own anchor is compared); the `singleFlexChild`

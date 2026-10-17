@@ -9,8 +9,9 @@
 use crate::algorithm::pixel_grid::round_value_to_pixel_grid;
 use crate::algorithm::sizing_mode::SizingMode;
 use crate::config::Config;
-use crate::enums::FlexDirection;
+use crate::enums::{Dimension, Direction, FlexDirection};
 use crate::node::LayoutNode;
+use crate::node::layout_results::CachedMeasurement;
 use crate::numeric::{inexact_equals, is_defined};
 
 /// Which cache entry a lookup hit.
@@ -22,7 +23,10 @@ pub enum CachedResult {
     Measurement(usize),
 }
 
-/// `canUseCachedMeasurement`.
+/// `canUseCachedMeasurement`, with Yoga's pixel-grid rounding tolerance on
+/// the same-spec comparison. This is the exported
+/// `YGNodeCanUseCachedMeasurement`; barre's own lookup
+/// ([`find_cached_result`]) uses [`can_use_cached_measurement_exact`].
 pub fn can_use_cached_measurement(
     width_mode: SizingMode,
     available_width: f32,
@@ -38,16 +42,90 @@ pub fn can_use_cached_measurement(
     margin_column: f32,
     config: &Config,
 ) -> bool {
+    can_use_cached_measurement_impl(
+        width_mode,
+        available_width,
+        height_mode,
+        available_height,
+        last_width_mode,
+        last_available_width,
+        last_height_mode,
+        last_available_height,
+        last_computed_width,
+        last_computed_height,
+        margin_row,
+        margin_column,
+        Some(config),
+    )
+}
+
+/// `canUseCachedMeasurement` without the pixel-grid rounding tolerance.
+///
+/// Deliberately differs from Yoga (yoga#1784): Yoga rounds both available
+/// sizes to the pixel grid before comparing them, so two different
+/// available sizes that round to the same pixel count as the same spec and a
+/// measure function's answer at one is reused at the other (text wraps
+/// differently at 140.6 than at 141), making the layout depend on history.
+/// barre's internal lookup compares them unrounded (as Yoga does with a
+/// point scale factor of 0), so a relayout matches a fresh layout. The
+/// exported [`can_use_cached_measurement`] keeps Yoga's tolerance.
+pub fn can_use_cached_measurement_exact(
+    width_mode: SizingMode,
+    available_width: f32,
+    height_mode: SizingMode,
+    available_height: f32,
+    last_width_mode: SizingMode,
+    last_available_width: f32,
+    last_height_mode: SizingMode,
+    last_available_height: f32,
+    last_computed_width: f32,
+    last_computed_height: f32,
+    margin_row: f32,
+    margin_column: f32,
+) -> bool {
+    can_use_cached_measurement_impl(
+        width_mode,
+        available_width,
+        height_mode,
+        available_height,
+        last_width_mode,
+        last_available_width,
+        last_height_mode,
+        last_available_height,
+        last_computed_width,
+        last_computed_height,
+        margin_row,
+        margin_column,
+        None,
+    )
+}
+
+/// `canUseCachedMeasurement`'s body. `config` is `None` for the exact
+/// comparison, which takes Yoga's `config == nullptr` branch (no rounding).
+fn can_use_cached_measurement_impl(
+    width_mode: SizingMode,
+    available_width: f32,
+    height_mode: SizingMode,
+    available_height: f32,
+    last_width_mode: SizingMode,
+    last_available_width: f32,
+    last_height_mode: SizingMode,
+    last_available_height: f32,
+    last_computed_width: f32,
+    last_computed_height: f32,
+    margin_row: f32,
+    margin_column: f32,
+    config: Option<&Config>,
+) -> bool {
     if (is_defined(last_computed_height) && last_computed_height < 0.0)
         || (is_defined(last_computed_width) && last_computed_width < 0.0)
     {
         return false;
     }
 
-    let point_scale_factor = config.point_scale_factor();
+    let point_scale_factor = config.map_or(0.0, |config| config.point_scale_factor());
 
-    // Yoga's `config != nullptr` check is dropped: `config` is a reference.
-    let use_rounded_comparison = point_scale_factor != 0.0;
+    let use_rounded_comparison = config.is_some() && point_scale_factor != 0.0;
     let effective_width = if use_rounded_comparison {
         round_value_to_pixel_grid(
             available_width as f64,
@@ -175,19 +253,68 @@ fn new_size_is_stricter_and_still_valid(
         && (last_computed_size <= size || inexact_equals(size, last_computed_size))
 }
 
+/// barre-only (yoga#1626, yoga#1003, yoga#1784), no Yoga counterpart:
+/// whether the node's own owner-relative inputs resolve the same under the
+/// owner size `entry` was stored with as under the current one. These are
+/// what `calculate_layout_impl` and the measure-function path resolve
+/// against `ownerWidth`/`ownerHeight` before a result is cached: padding,
+/// border and margin on both axes against the owner width (yoga#1626, and
+/// the measure function's adjusted available width, yoga#1784), and min/max
+/// width and height against the owner width and height (yoga#1003).
+fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
+    node: N,
+    direction: Direction,
+    entry: &CachedMeasurement,
+    owner_width: f32,
+    owner_height: f32,
+) -> bool {
+    let style = node.style();
+    let resolve = |ow: f32, oh: f32| {
+        [
+            style.compute_padding_and_border_for_dimension(direction, Dimension::Width, ow),
+            style.compute_padding_and_border_for_dimension(direction, Dimension::Height, ow),
+            style.compute_margin_for_axis(FlexDirection::Row, ow),
+            style.compute_margin_for_axis(FlexDirection::Column, ow),
+            style.resolved_min_dimension(direction, Dimension::Width, ow, ow),
+            style.resolved_max_dimension(direction, Dimension::Width, ow, ow),
+            style.resolved_min_dimension(direction, Dimension::Height, oh, ow),
+            style.resolved_max_dimension(direction, Dimension::Height, oh, ow),
+        ]
+    };
+    let stored = resolve(entry.owner_width, entry.owner_height);
+    let current = resolve(owner_width, owner_height);
+    stored
+        .iter()
+        .zip(current.iter())
+        .all(|(&a, &b)| inexact_equals(a, b))
+}
+
 /// `calculateLayoutInternal` (the cache lookup): the entry of `node`'s layout
 /// cache (for `perform_layout`) or measurement cache whose results can be
 /// reused for these constraints, if any.
+///
+/// Deliberately differs from Yoga in two ways. Each entry must also match
+/// on the node's own owner-relative inputs ([`owner_dependent_inputs_match`],
+/// yoga#1626, yoga#1003, yoga#1784), checked alongside Yoga's conditions in
+/// each loop so the search continues past an entry that fails it, as it does
+/// past one that fails Yoga's own. And measure-function nodes compare
+/// available sizes with [`can_use_cached_measurement_exact`], without Yoga's
+/// pixel-grid rounding tolerance (yoga#1784).
 pub fn find_cached_result<'a, N: LayoutNode<'a>>(
     node: N,
     available_width: f32,
     available_height: f32,
+    owner_direction: Direction,
     width_sizing_mode: SizingMode,
     height_sizing_mode: SizingMode,
     owner_width: f32,
+    owner_height: f32,
     perform_layout: bool,
 ) -> Option<CachedResult> {
     let layout = node.layout();
+    let owner_key_matches = |entry: &CachedMeasurement| {
+        owner_dependent_inputs_match(node, owner_direction, entry, owner_width, owner_height)
+    };
 
     // Determine whether the results are already cached. We maintain a
     // separate cache for layouts and measurements. A layout operation
@@ -207,7 +334,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
 
         // First, try to use the layout cache.
         let cached_layout = layout.cached_layout.get();
-        if can_use_cached_measurement(
+        if can_use_cached_measurement_exact(
             width_sizing_mode,
             available_width,
             height_sizing_mode,
@@ -220,15 +347,15 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
             cached_layout.computed_height,
             margin_axis_row,
             margin_axis_column,
-            node.config(),
-        ) {
+        ) && owner_key_matches(&cached_layout)
+        {
             return Some(CachedResult::Layout);
         }
 
         // Try to use the measurement cache.
         for i in 0..layout.next_cached_measurements_index.get() as usize {
             let entry = layout.cached_measurements[i].get();
-            if can_use_cached_measurement(
+            if can_use_cached_measurement_exact(
                 width_sizing_mode,
                 available_width,
                 height_sizing_mode,
@@ -241,8 +368,8 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
                 entry.computed_height,
                 margin_axis_row,
                 margin_axis_column,
-                node.config(),
-            ) {
+            ) && owner_key_matches(&entry)
+            {
                 return Some(CachedResult::Measurement(i));
             }
         }
@@ -253,6 +380,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
             && inexact_equals(cached_layout.available_height, available_height)
             && cached_layout.width_sizing_mode == width_sizing_mode
             && cached_layout.height_sizing_mode == height_sizing_mode
+            && owner_key_matches(&cached_layout)
         {
             Some(CachedResult::Layout)
         } else {
@@ -265,6 +393,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
                 && inexact_equals(entry.available_height, available_height)
                 && entry.width_sizing_mode == width_sizing_mode
                 && entry.height_sizing_mode == height_sizing_mode
+                && owner_key_matches(&entry)
             {
                 return Some(CachedResult::Measurement(i));
             }

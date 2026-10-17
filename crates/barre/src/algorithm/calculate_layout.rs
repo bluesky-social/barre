@@ -3148,8 +3148,13 @@ fn has_retainable_flex_basis_child<'a, N: LayoutNode<'a>>(node: N) -> bool {
 /// ([`FlexBasisAnchor`]), replays an anchor call answered from an earlier
 /// layout's cache before the next real run, stamps stored entries with the
 /// generation and anchor key, and refuses an earlier layout's entry computed
-/// under a different anchor when a child's basis can be retained. Known
-/// residuals are listed on `LayoutResults`.
+/// under a different anchor when a child's basis can be retained. It also
+/// stamps entries with the owner size, which `find_cached_result` keys on so
+/// that an entry whose node's own percent padding, margin (yoga#1626,
+/// yoga#1784) or min/max (yoga#1003) resolve differently under the current
+/// owner size is not a hit; that lookup also compares a measure-function
+/// node's available sizes exactly (yoga#1784). Known residuals are listed on
+/// `LayoutResults`.
 pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     node: N,
     available_width: f32,
@@ -3192,9 +3197,11 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         node,
         available_width,
         available_height,
+        owner_direction,
         width_sizing_mode,
         height_sizing_mode,
         owner_width,
+        owner_height,
         perform_layout,
     );
 
@@ -3324,6 +3331,8 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             available_height,
             computed_width: layout.measured_dimension(Dimension::Width),
             computed_height: layout.measured_dimension(Dimension::Height),
+            owner_width,
+            owner_height,
             generation: generation_count,
             anchor_available_width: anchor.available_width,
             anchor_available_height: anchor.available_height,
