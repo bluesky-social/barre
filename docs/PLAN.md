@@ -119,3 +119,11 @@ measure functions and the measure cache, dirty marking, intrinsic sizing.
   makes every benchmark checksum match barre. Consequence: against RN's Yoga,
   rare one-pixel differences on text leaves in deep trees are expected and
   accepted (docs/BENCH.md).
+- **2026-10-17, cache tolerance (yoga#1784):** barre's internal cache compares
+  available sizes exactly; Yoga treats sizes that round to the same pixel as
+  equal, which makes layouts depend on history (a measure func's answer at one
+  width reused at another). The exported `YGNodeCanUseCachedMeasurement` keeps
+  Yoga's tolerant semantics for API compatibility.
+- **2026-10-17, correctness bar:** relayout must equal a fresh layout of the
+  same tree. Where Yoga's caching violates that, barre follows the fresh
+  layout and records the divergence in conformance/divergences.md.
