@@ -176,6 +176,67 @@ loads, not calls. Pixel differences between the arms are RN 0.88's older
 rounding (e.g. `feed50`'s text nodes 1 pt taller under RN's Yoga at
 y ≈ 17 000, yoga#2037), already visible as `rn-yoga` vs `yoga` mismatches.
 
+### Phase B: social-app integration (in progress, handover 2026-10-18)
+
+Worktree `~/Documents/Programming/bluesky-social/social-app-barre`, branch
+`samuel/barre-layout-engine`, stacked on #12057 (RN 0.88 / Expo 58) and
+#12024 (Android source builds). Nothing here is committed or pushed yet.
+
+**What exists (uncommitted):**
+
+- `plugins/withBarre.js`, registered in `app.config.js`. With `BARRE=1` at
+  prebuild it runs `scripts/barre/build.sh`; without it, a no-op.
+- `scripts/barre/build.sh` (`pnpm barre:build [ios|android|all]`): builds
+  `barre-rn` with `--profile release-lto` and installs it into
+  `react-native/ReactCommon/yoga/barre-rn/` (an xcframework on iOS, per-ABI
+  `.a` files on Android), where the patched podspec and CMakeLists pick it up.
+- `patches/react-native@0.88.0.patch`: the original patch plus the Yoga hunks
+  appended. They are byte-identical to `rn/patches/yoga-rn-0.88.patch` on this
+  branch (checked: 0 diff lines), so no refresh is needed.
+- `pnpm-lock.yaml`: the only change is the `react-native` `patch_hash`,
+  repeated wherever it is referenced. That is what pnpm writes when the patch
+  changes, not an accidental regeneration.
+- `node_modules` already has the patch applied, `ios/` is prebuilt, and a
+  `BarreRN.xcframework` is already installed. It predates the fmt-only commit
+  and came from a checkout I did not record, so rebuild it before measuring.
+
+**Not verified:** no A/B build has been completed or launched. Treat every
+claim above about the app side as "reads right", not "works".
+
+**Gotchas:**
+
+- `build.sh` defaults `BARRE_SRC` to `../barre`, the main checkout, which has
+  no `crates/barre-rn` until the rn-shim layer (#12) merges. Until then set
+  `BARRE_SRC` to a checkout of the `rn-shim` branch. After the merge the
+  default works.
+- The switch is off by default. The arm is chosen at launch: `BARRE_LAYOUT=1`
+  (iOS) or the `debug.barre.layout` system property (Android). If barre is
+  requested but fails to initialise, the app aborts rather than falling back
+  to Yoga, so a running barre arm really is barre.
+- iOS Release builds RN's C++ at `-Os` (social-app#12061 would make it `-O2`).
+  Build both arms with the same optimisation flags or the A/B is meaningless.
+- Expect sub-pixel differences against RN's Yoga (barre follows the newer
+  rounding, yoga#2037/#2040/#2041). That is expected, not a shim bug.
+
+**Next steps:**
+
+1. Rebuild barre-rn (`BARRE=1`, iOS) and build the app once. The arm is a
+   launch switch, so one binary serves both arms.
+2. Launch it on the simulator `iPhone 17 Pro (barre)`
+   (`564B0A5F-F8BA-480A-8AA6-240F060768CA`) with and without `BARRE_LAYOUT=1`.
+   Check first that the barre arm starts and that a feed and a long thread
+   render the same as Yoga's.
+3. Give the argent comparison (scroll flow, layout timings) to a Sonnet
+   subagent at medium effort. Reuse the instrumentation and flow from the o2
+   experiment (raw data in `/tmp/bsky-o2-runs/`).
+4. Write the results here, and commit the social-app work in stacked
+   commits (`gh stack`, never `sync`).
+
+Building was deliberately held back until the o2 experiment on `bsky-o2`
+finished (3:00am on 2026-10-18): an Xcode build on the same machine would
+perturb its timings. Do not use `bsky-o2`, the iPhone 14 or `social-app-o2`
+for this work.
+
 ---
 
 ## 1. How RN 0.86 consumes Yoga
