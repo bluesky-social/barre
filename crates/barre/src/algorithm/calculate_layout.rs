@@ -3285,8 +3285,14 @@ fn has_retainable_flex_basis_child<'a, N: LayoutNode<'a>>(node: N) -> bool {
 /// matches a fresh layout: it tracks each container's flex-basis anchor
 /// ([`FlexBasisAnchor`]), replays an anchor call answered from an earlier
 /// layout's cache before the next real run, stamps stored entries with the
-/// generation and anchor key, and refuses an earlier layout's entry computed
-/// under a different anchor when a child's basis can be retained. It also
+/// generation and anchor key (and restamps an earlier layout's entry a
+/// container hits, as a fresh layout would have stored it), makes the
+/// `singleFlexChild` zero-basis write of a `StretchFit`-main call answered
+/// from an earlier layout's cache, and refuses an earlier layout's entry
+/// computed under a different anchor when a child's basis can be retained.
+/// A call starts an anchor when it is the node's first in the layout that
+/// computes flex bases (not a fixed-size measurement) or its available main
+/// size is undefined. It also
 /// stamps entries with the owner size, which `find_cached_result` keys on so
 /// that an entry whose node's own percent padding, margin (yoga#1626,
 /// yoga#1784) or min/max (yoga#1003) resolve differently under the current

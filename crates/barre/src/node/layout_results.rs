@@ -145,8 +145,10 @@ pub const MAX_CACHED_MEASUREMENTS: usize = 8;
 /// Known residuals this does not fix: measure-function
 /// leaves reused through `can_use_cached_measurement`'s compatible sizes;
 /// pixel-grid rounding re-applied to cached subtrees; history more than one
-/// level deep (only a node's own anchor is compared); the `singleFlexChild`
-/// zero basis written by a skipped `StretchFit`-main call; and cache-slot
+/// level deep (only a node's own anchor is compared, and only its latest
+/// skipped anchor is replayed, so the calls an earlier skipped anchor or a
+/// skipped non-anchor call made into the children are lost:
+/// `conformance/tests/YGRelayoutFreshResidualTest.cpp`); and cache-slot
 /// occupancy by earlier-layout entries.
 #[derive(Clone, Debug)]
 #[repr(C)]
