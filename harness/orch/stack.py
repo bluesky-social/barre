@@ -403,7 +403,9 @@ class Stacker:
         ldir.mkdir(parents=True, exist_ok=True)
         for name, data in (files or {}).items():
             (ldir / Path(name).name).write_bytes(data)
-        if not failed and summary and summary.get("valid", True):
+        # Green needs both: the checks passed and the results show no
+        # regression (a check that passed despite regressions is CI's bug).
+        if not failed and summary and summary.get("valid", True) and not summary.get("regressions"):
             self._green(layer, ldir)
         elif summary is None or not summary.get("valid", True) and not summary.get("regressions"):
             self._infra(layer, runs, failed)

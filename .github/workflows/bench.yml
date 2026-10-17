@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+# bash -eo pipefail (the implicit default is plain `bash -e`, where
+# `./conf ... | tee log` would take tee's exit status).
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
