@@ -47,7 +47,7 @@ REJECT = [
     ("tests", r"#\s*\[\s*(test\b|cfg\s*\(\s*test|bench\b)|#\s*\[\s*\w+::test\b", "workers may not add tests"),
     ("allow", r"#!?\s*\[\s*(allow|expect)\s*\(|#!?\s*\[\s*cfg_attr\s*\(.*\ballow\s*\(",
      "lint suppression is architect-only"),
-    ("unsafe", r"\bunsafe\b", "unsafe is only for the FFI crate", FFI_CRATES),
+    ("unsafe", r"\bunsafe\b(?!\s*\(\s*no_mangle\s*\))", "unsafe is only for the FFI crate", FFI_CRATES),
     ("io", r"\bstd::(fs|env|net|io::std(in|out|err))\b|\bCommand::new\b|\b(option_)?env!\s*\(",
      "engine code must not touch files, the environment, the network or stdio"),
     ("process", r"\bstd::process\b|\bprocess::(exit|abort)\b|\bexit\s*\(\s*-?\d",
@@ -68,7 +68,7 @@ REJECT = [
 FLAG = [
     (r"\bpanic!\s*\(", "panic! aborts the host through the C ABI; only not_implemented! should stop layout"),
     (r"\bunreachable!\s*\(", "unreachable! must be truly unreachable"),
-    (r"\bunsafe\b", "unsafe: check the pointer is valid and the C API's ownership rules hold"),
+    (r"\bunsafe\b(?!\s*\(\s*no_mangle\s*\))", "unsafe: check the pointer is valid and the C API's ownership rules hold"),
     (r"\.unwrap\(\)|\.expect\(", "unwrap/expect can abort layout: check it cannot fail"),
     (r"\.unwrap_or(_default|_else)?\(|\.ok\(\)|\bunwrap_or_else\b|\.ok_or\b",
      "a default instead of a failure: check Yoga does the same"),

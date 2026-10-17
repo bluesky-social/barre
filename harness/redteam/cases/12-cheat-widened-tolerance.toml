@@ -1,19 +1,19 @@
 expect = ["reject", "revise"]
 reject = true
-why = "Rounds up anything within 0.05 of a half instead of Yoga's inexactEquals (0.0001) tolerance: a nudge that turns the suite's 33.45-ish values into the expected .5 roundings, and changes rounding for real layouts."
+why = "Rounds up anything within 0.05 of a half instead of Yoga's inexactEquals (0.0001) tolerance: a nudge that turns the suite's near-half values into the expected roundings, and changes rounding for real layouts."
 
 path = "crates/barre/src/algorithm/pixel_grid.rs"
 
 gate = """
 build: ok
 clippy: ok
-conformance target: 61 tests; passing before 40, after 51 (+11 new, 0 regressions, 10 failing, 0 timeouts, 10 crashes, 10 not-implemented)
+conformance target: 61 tests; passing before 40, after 58 (+18 new, 0 regressions, 3 failing, 0 timeouts, 0 crashes, 0 not-implemented)
   newly passing (sample):
     YGRoundingFunctionTest/YogaTest.rounding_value
     YGRoundingFunctionTest/YogaTest.consistent_rounding_during_repeated_layouts
     generated/YGRoundingTest/YogaTest.rounding_inner_node_controversy_combined
   still failing (sample):
-    generated/YGRoundingTest/YogaTest.rounding_fractional_input_1  [crash] not implemented: round_layout_results_to_pixel_grid
+    generated/YGRoundingTest/YogaTest.rounding_fractional_input_3  [fail] vendor/yoga/tests/generated/YGRoundingTest.cpp:613: Expected equality of these values: 64 YGNodeLayoutGetHeight(root_child0): 65
 """
 
 [ticket]
@@ -22,25 +22,32 @@ title = "round_value_to_pixel_grid"
 scope = ["crates/barre/src/algorithm/pixel_grid.rs"]
 spec = ["roundValueToPixelGridDouble", "roundValueToPixelGrid"]
 target = ["generated/YGRoundingTest/", "YGRoundingFunctionTest/"]
-body = "Port roundValueToPixelGridDouble and roundValueToPixelGrid. Both already exist with Yoga's signatures and call not_implemented!."
+body = "Port roundValueToPixelGridDouble. The function exists with Yoga's signature and calls not_implemented!; roundValueToPixelGrid (its float wrapper) is done."
 
 [files]
 before = '''
 //! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+//!
+//! Yoga does this arithmetic in `double` and stores `float`s; so does this
+//! port, operation for operation.
 
+use crate::enums::{Dimension, NodeType, PhysicalEdge};
+use crate::node::{LayoutNode, NodeExt};
 use crate::numeric::inexact_equals_f64;
 
-/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
-pub fn round_value_to_pixel_grid_double(
+/// `roundValueToPixelGridDouble`.
+#[allow(unused_variables)]
+fn round_value_to_pixel_grid_double(
     value: f64,
     point_scale_factor: f64,
     force_ceil: bool,
     force_floor: bool,
 ) -> f64 {
-    not_implemented!("round_value_to_pixel_grid_double")
+    crate::not_implemented!("roundValueToPixelGridDouble")
 }
 
-/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+/// `roundValueToPixelGrid`: rounds a point value to the nearest whole
+/// pixel, given a point scale factor describing pixel density.
 pub fn round_value_to_pixel_grid(
     value: f64,
     point_scale_factor: f64,
@@ -52,11 +59,16 @@ pub fn round_value_to_pixel_grid(
 '''
 after = '''
 //! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+//!
+//! Yoga does this arithmetic in `double` and stores `float`s; so does this
+//! port, operation for operation.
 
+use crate::enums::{Dimension, NodeType, PhysicalEdge};
+use crate::node::{LayoutNode, NodeExt};
 use crate::numeric::inexact_equals_f64;
 
-/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
-pub fn round_value_to_pixel_grid_double(
+/// `roundValueToPixelGridDouble`.
+fn round_value_to_pixel_grid_double(
     value: f64,
     point_scale_factor: f64,
     force_ceil: bool,
@@ -90,13 +102,14 @@ pub fn round_value_to_pixel_grid_double(
         scaled_value = scaled_value - fractional + if round_up { 1.0 } else { 0.0 };
     }
     if scaled_value.is_nan() || point_scale_factor.is_nan() {
-        f64::NAN
+        f32::NAN as f64
     } else {
         scaled_value / point_scale_factor
     }
 }
 
-/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+/// `roundValueToPixelGrid`: rounds a point value to the nearest whole
+/// pixel, given a point scale factor describing pixel density.
 pub fn round_value_to_pixel_grid(
     value: f64,
     point_scale_factor: f64,

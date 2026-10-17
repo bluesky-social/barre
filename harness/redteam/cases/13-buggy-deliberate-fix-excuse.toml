@@ -11,9 +11,8 @@ conformance target: 23 tests; passing before 9, after 20 (+11 new, 0 regressions
   newly passing (sample):
     YGMeasureCacheTest/YogaTest.measure_once_single_flexible_child
     YGMeasureCacheTest/YogaTest.remeasure_with_same_exact_width_larger_than_needed_height
-    YGMeasureCacheTest/YogaTest.remeasure_with_atmost_computed_width_undefined_height
   still failing (sample):
-    YGRelayoutTest/YogaTest.recalculate_resolvedDimonsion_onchange  [fail] Expected equality of these values: 0 YGNodeLayoutGetHeight(item): 10
+    YGRelayoutTest/YogaTest.recalculate_resolvedDimonsion_onchange  [fail] vendor/yoga/tests/YGRelayoutTest.cpp:45: Expected equality of these values: 0 YGNodeLayoutGetHeight(item): 10
 """
 
 [ticket]
@@ -22,19 +21,21 @@ title = "can_use_cached_measurement"
 scope = ["crates/barre/src/algorithm/cache.rs"]
 spec = ["canUseCachedMeasurement"]
 target = ["YGMeasureCacheTest/", "YGRelayoutTest/"]
-body = "Port yoga/algorithm/Cache.cpp: canUseCachedMeasurement and its three static helpers. calculate_layout_internal already calls it."
+body = "Port canUseCachedMeasurement and its three static helpers from yoga/algorithm/Cache.cpp. The cache lookup in find_cached_result is a separate ticket; the C API's YGNodeCanUseCachedMeasurement already calls this function."
 
 [files]
 before = '''
-//! The measure cache's compatibility check (`yoga/algorithm/Cache.cpp`).
+//! The measure/layout cache (`yoga/algorithm/Cache.cpp`, and the cache
+//! lookup in `calculateLayoutInternal`).
 
 use crate::algorithm::pixel_grid::round_value_to_pixel_grid;
 use crate::algorithm::sizing_mode::SizingMode;
 use crate::config::Config;
+use crate::node::LayoutNode;
 use crate::numeric::{inexact_equals, is_defined};
 
-/// Yoga: canUseCachedMeasurement (algorithm/Cache.cpp)
-#[allow(clippy::too_many_arguments)]
+/// `canUseCachedMeasurement`.
+#[allow(unused_variables)]
 pub fn can_use_cached_measurement(
     width_mode: SizingMode,
     available_width: f32,
@@ -50,17 +51,19 @@ pub fn can_use_cached_measurement(
     margin_column: f32,
     config: &Config,
 ) -> bool {
-    not_implemented!("can_use_cached_measurement")
+    crate::not_implemented!("canUseCachedMeasurement")
 }
 '''
 after = '''
-//! The measure cache's compatibility check (`yoga/algorithm/Cache.cpp`).
+//! The measure/layout cache (`yoga/algorithm/Cache.cpp`, and the cache
+//! lookup in `calculateLayoutInternal`).
 
 use crate::algorithm::sizing_mode::SizingMode;
 use crate::config::Config;
+use crate::node::LayoutNode;
 use crate::numeric::{inexact_equals, is_defined};
 
-/// Yoga: sizeIsExactAndMatchesOldMeasuredSize (algorithm/Cache.cpp)
+/// `sizeIsExactAndMatchesOldMeasuredSize`.
 #[inline]
 fn size_is_exact_and_matches_old_measured_size(
     size_mode: SizingMode,
@@ -70,7 +73,7 @@ fn size_is_exact_and_matches_old_measured_size(
     size_mode == SizingMode::StretchFit && inexact_equals(size, last_computed_size)
 }
 
-/// Yoga: oldSizeIsMaxContentAndStillFits (algorithm/Cache.cpp)
+/// `oldSizeIsMaxContentAndStillFits`.
 #[inline]
 fn old_size_is_max_content_and_still_fits(
     size_mode: SizingMode,
@@ -83,7 +86,7 @@ fn old_size_is_max_content_and_still_fits(
         && (size >= last_computed_size || inexact_equals(size, last_computed_size))
 }
 
-/// Yoga: newSizeIsStricterAndStillValid (algorithm/Cache.cpp)
+/// `newSizeIsStricterAndStillValid`.
 #[inline]
 fn new_size_is_stricter_and_still_valid(
     size_mode: SizingMode,
@@ -101,8 +104,7 @@ fn new_size_is_stricter_and_still_valid(
         && (last_computed_size <= size || inexact_equals(size, last_computed_size))
 }
 
-/// Yoga: canUseCachedMeasurement (algorithm/Cache.cpp)
-#[allow(clippy::too_many_arguments)]
+/// `canUseCachedMeasurement`.
 pub fn can_use_cached_measurement(
     width_mode: SizingMode,
     available_width: f32,

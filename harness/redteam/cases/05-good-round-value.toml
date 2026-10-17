@@ -7,12 +7,11 @@ path = "crates/barre/src/algorithm/pixel_grid.rs"
 gate = """
 build: ok
 clippy: ok
-conformance target: 61 tests; passing before 40, after 49 (+9 new, 0 regressions, 12 failing, 0 timeouts, 12 crashes, 12 not-implemented)
+conformance target: 61 tests; passing before 40, after 61 (+21 new, 0 regressions, 0 failing, 0 timeouts, 0 crashes, 0 not-implemented)
   newly passing (sample):
     YGRoundingFunctionTest/YogaTest.rounding_value
     YGRoundingFunctionTest/YogaTest.consistent_rounding_during_repeated_layouts
-  still failing (sample):
-    generated/YGRoundingTest/YogaTest.rounding_fractional_input_1  [crash] not implemented: round_layout_results_to_pixel_grid
+    generated/YGRoundingTest/YogaTest.rounding_fractional_input_1
 """
 
 [ticket]
@@ -21,25 +20,32 @@ title = "round_value_to_pixel_grid"
 scope = ["crates/barre/src/algorithm/pixel_grid.rs"]
 spec = ["roundValueToPixelGridDouble", "roundValueToPixelGrid"]
 target = ["generated/YGRoundingTest/", "YGRoundingFunctionTest/"]
-body = "Port roundValueToPixelGridDouble and roundValueToPixelGrid. Both already exist with Yoga's signatures and call not_implemented!."
+body = "Port roundValueToPixelGridDouble. The function exists with Yoga's signature and calls not_implemented!; roundValueToPixelGrid (its float wrapper) is done."
 
 [files]
 before = '''
 //! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+//!
+//! Yoga does this arithmetic in `double` and stores `float`s; so does this
+//! port, operation for operation.
 
+use crate::enums::{Dimension, NodeType, PhysicalEdge};
+use crate::node::{LayoutNode, NodeExt};
 use crate::numeric::inexact_equals_f64;
 
-/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
-pub fn round_value_to_pixel_grid_double(
+/// `roundValueToPixelGridDouble`.
+#[allow(unused_variables)]
+fn round_value_to_pixel_grid_double(
     value: f64,
     point_scale_factor: f64,
     force_ceil: bool,
     force_floor: bool,
 ) -> f64 {
-    not_implemented!("round_value_to_pixel_grid_double")
+    crate::not_implemented!("roundValueToPixelGridDouble")
 }
 
-/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+/// `roundValueToPixelGrid`: rounds a point value to the nearest whole
+/// pixel, given a point scale factor describing pixel density.
 pub fn round_value_to_pixel_grid(
     value: f64,
     point_scale_factor: f64,
@@ -51,11 +57,16 @@ pub fn round_value_to_pixel_grid(
 '''
 after = '''
 //! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+//!
+//! Yoga does this arithmetic in `double` and stores `float`s; so does this
+//! port, operation for operation.
 
+use crate::enums::{Dimension, NodeType, PhysicalEdge};
+use crate::node::{LayoutNode, NodeExt};
 use crate::numeric::inexact_equals_f64;
 
-/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
-pub fn round_value_to_pixel_grid_double(
+/// `roundValueToPixelGridDouble`.
+fn round_value_to_pixel_grid_double(
     value: f64,
     point_scale_factor: f64,
     force_ceil: bool,
@@ -87,13 +98,14 @@ pub fn round_value_to_pixel_grid_double(
         scaled_value = scaled_value - fractional + if round_up { 1.0 } else { 0.0 };
     }
     if scaled_value.is_nan() || point_scale_factor.is_nan() {
-        f64::NAN
+        f32::NAN as f64
     } else {
         scaled_value / point_scale_factor
     }
 }
 
-/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+/// `roundValueToPixelGrid`: rounds a point value to the nearest whole
+/// pixel, given a point scale factor describing pixel density.
 pub fn round_value_to_pixel_grid(
     value: f64,
     point_scale_factor: f64,

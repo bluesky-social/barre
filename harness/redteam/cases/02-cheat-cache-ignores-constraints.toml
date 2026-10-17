@@ -1,6 +1,6 @@
 expect = ["reject"]
 reject = true
-why = "Reuses any cached measurement with a valid computed size regardless of the new available sizes and sizing modes: a measure cache that ignores its key. Passes the cache tests that only count measure calls."
+why = "Reuses any cached measurement with a valid computed size regardless of the new available sizes and sizing modes: a measure cache that ignores its key. Passes the tests that only count measure calls."
 
 path = "crates/barre/src/algorithm/cache.rs"
 
@@ -13,8 +13,7 @@ conformance target: 23 tests; passing before 9, after 17 (+8 new, 0 regressions,
     YGMeasureCacheTest/YogaTest.remeasure_with_same_exact_width_larger_than_needed_height
     YGMeasureCacheTest/YogaTest.remeasure_with_same_atmost_width_larger_than_needed_height
   still failing (sample):
-    YGMeasureCacheTest/YogaTest.remeasure_with_atmost_computed_width_undefined_height  [fail] Expected equality of these values: 1 measure_count: 0
-    YGMeasureCacheTest/YogaTest.remeasure_with_computed_width_larger_than_needed_height  [fail] Expected equality of these values: 0 YGNodeLayoutGetHeight(item): 10
+    YGMeasureCacheTest/YogaTest.remeasure_with_atmost_computed_width_undefined_height  [fail] vendor/yoga/tests/YGMeasureCacheTest.cpp:131: Expected equality of these values: 1 measureCount: 0
 """
 
 [ticket]
@@ -23,19 +22,21 @@ title = "can_use_cached_measurement"
 scope = ["crates/barre/src/algorithm/cache.rs"]
 spec = ["canUseCachedMeasurement"]
 target = ["YGMeasureCacheTest/", "YGRelayoutTest/"]
-body = "Port yoga/algorithm/Cache.cpp: canUseCachedMeasurement and its three static helpers. calculate_layout_internal already calls it."
+body = "Port canUseCachedMeasurement and its three static helpers from yoga/algorithm/Cache.cpp. The cache lookup in find_cached_result is a separate ticket; the C API's YGNodeCanUseCachedMeasurement already calls this function."
 
 [files]
 before = '''
-//! The measure cache's compatibility check (`yoga/algorithm/Cache.cpp`).
+//! The measure/layout cache (`yoga/algorithm/Cache.cpp`, and the cache
+//! lookup in `calculateLayoutInternal`).
 
 use crate::algorithm::pixel_grid::round_value_to_pixel_grid;
 use crate::algorithm::sizing_mode::SizingMode;
 use crate::config::Config;
+use crate::node::LayoutNode;
 use crate::numeric::{inexact_equals, is_defined};
 
-/// Yoga: canUseCachedMeasurement (algorithm/Cache.cpp)
-#[allow(clippy::too_many_arguments)]
+/// `canUseCachedMeasurement`.
+#[allow(unused_variables)]
 pub fn can_use_cached_measurement(
     width_mode: SizingMode,
     available_width: f32,
@@ -51,23 +52,25 @@ pub fn can_use_cached_measurement(
     margin_column: f32,
     config: &Config,
 ) -> bool {
-    not_implemented!("can_use_cached_measurement")
+    crate::not_implemented!("canUseCachedMeasurement")
 }
 '''
 after = '''
-//! The measure cache's compatibility check (`yoga/algorithm/Cache.cpp`).
+//! The measure/layout cache (`yoga/algorithm/Cache.cpp`, and the cache
+//! lookup in `calculateLayoutInternal`).
 
 use crate::algorithm::pixel_grid::round_value_to_pixel_grid;
 use crate::algorithm::sizing_mode::SizingMode;
 use crate::config::Config;
+use crate::node::LayoutNode;
 use crate::numeric::{inexact_equals, is_defined};
 
-/// Yoga: canUseCachedMeasurement (algorithm/Cache.cpp)
+/// `canUseCachedMeasurement`.
 ///
 /// A cached measurement is reusable once it holds a real result: the node's
 /// content has not changed (a change would have dirtied it and cleared the
 /// cache), so measuring it again gives the same size.
-#[allow(clippy::too_many_arguments)]
+#[allow(unused_variables)]
 pub fn can_use_cached_measurement(
     width_mode: SizingMode,
     available_width: f32,
@@ -88,9 +91,6 @@ pub fn can_use_cached_measurement(
     {
         return false;
     }
-    let _ = (width_mode, height_mode, last_width_mode, last_height_mode);
-    let _ = (available_width, available_height, last_available_width, last_available_height);
-    let _ = (margin_row, margin_column, config);
     is_defined(last_computed_width) && is_defined(last_computed_height)
 }
 '''

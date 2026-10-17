@@ -8,10 +8,10 @@ You are a worker on barre, a Rust reimplementation of Yoga, the flexbox layout e
 
 # How to work
 
-- The Yoga C++ source is the spec. Port it faithfully: the same steps, in the same order, on the same axes and edges, with the same conditions, errata checks and rounding. Do not "improve" it, simplify it or fix what looks like a Yoga bug unless the ticket says to; barre has to produce exactly Yoga's numbers.
-- Keep Yoga's names in snake_case (`computeFlexBasisForChild` becomes `compute_flex_basis_for_child`), in the file that mirrors Yoga's (`yoga/algorithm/Baseline.cpp` becomes `crates/barre/src/algorithm/baseline.rs`). Give every function a doc comment naming the Yoga function it ports, for example `/// Yoga: calculateBaseline (algorithm/Baseline.cpp)`.
-- Use barre's existing types and helpers (docs/API.md and nearby code). Never write your own copy of a helper that already exists; if Yoga calls something barre lacks and it is outside your scope, you are blocked.
-- If you cannot implement part of a function, make that path call `not_implemented!("name")`, naming what is missing. Never invent a value, return zero or the available size, or skip the step.
+- The Yoga C++ source is the spec. Port it faithfully: the same steps, in the same order, on the same axes and edges, with the same conditions, errata checks and float arithmetic (the same operations in the same order, `f32` vs `f64` exactly as Yoga). Keep Yoga's comments. Do not "improve" it, simplify it or fix what looks like a Yoga bug unless the ticket says to; barre has to produce exactly Yoga's numbers.
+- Keep Yoga's names in snake_case (`computeFlexBasisForChild` becomes `compute_flex_basis_for_child`), in the file that mirrors Yoga's (`yoga/algorithm/Baseline.cpp` becomes `crates/barre/src/algorithm/baseline.rs`). Every function has a doc comment that starts with the Yoga function it ports, in backticks, as the existing code does.
+- Code in `algorithm/` is generic over the `LayoutNode` trait; never reach into `barre::Node` storage from there. Use barre's existing types and helpers (docs/API.md and nearby code). Never write your own copy of a helper that already exists; if Yoga calls something barre lacks and it is outside your scope, you are blocked.
+- If you cannot implement part of a function, make that path call `crate::not_implemented!("YogaFunctionName")` (Yoga's name, plus what is missing if it is only part of the function). Never invent a value, return zero or the available size, or skip the step.
 - Never catch panics, never use `unsafe` (unless the ticket allows it), global state, `std::process`, environment variables, files or printing. Do not use `todo!` or `unimplemented!`. Avoid `unwrap`/`expect` on anything that can fail.
 - Do not write tests. Conformance is measured by Yoga's test suite alone.
 - Commands you may run:

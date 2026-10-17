@@ -108,6 +108,8 @@ def test_lint():
               f"lint does not flag {line!r} as a magic number: {f}")
     r, _ = lint(added("crates/barre-ffi/src/node.rs", "unsafe { &*node }"))
     check(not r, "unsafe is allowed in the FFI crate")
+    _, f = lint(added("crates/barre-ffi/src/node.rs", "#[unsafe(no_mangle)]"))
+    check(not f, f"#[unsafe(no_mangle)] is not flagged: {f}")
     r, _ = lint(added(engine, "unsafe { x }"), allow=["unsafe"])
     check(not r, "a ticket can waive a rule")
     check("unsafe" in RULES and "global-state" in RULES, "rule ids")

@@ -1,111 +1,84 @@
 expect = ["reject", "revise"]
 reject = true
-why = "Yoga treats a NaN from the baseline function as a fatal error (assertFatalWithNode aborts); this returns a made-up 0.0 instead, hiding the embedder's bug. Otherwise a faithful port."
+why = "Yoga's setMeasureFunc treats a measure function on a node with children as a fatal error (assertFatalWithNode throws); this logs a warning, ignores the function and returns Ok, hiding the embedder's bug. The YogaDeathTest that checks it keeps failing; the rest passes."
 
-path = "crates/barre/src/algorithm/baseline.rs"
+path = "crates/barre/src/node/mod.rs"
 
 gate = """
 build: ok
 clippy: ok
-conformance target: 21 tests; passing before 0, after 21 (+21 new, 0 regressions, 0 failing, 0 timeouts, 0 crashes, 0 not-implemented)
+conformance target: 32 tests; passing before 3, after 31 (+28 new, 0 regressions, 1 failing, 0 timeouts, 0 crashes, 0 not-implemented)
   newly passing (sample):
-    generated/YGAlignItemsTest/YogaTest.align_baseline
-    generated/YGAlignItemsTest/YogaTest.align_baseline_child
-    generated/YGAlignItemsTest/YogaTest.align_baseline_child_multiline
-    YGAlignBaselineTest/YogaTest.align_baseline_parent_ht_not_specified
-    YGBaselineFuncTest/YogaTest.align_baseline_customer_func
+    YGMeasureTest/YogaTest.dont_measure_single_grow_shrink_child
+    YGMeasureTest/YogaTest.can_nullify_measure_func_on_any_node
+    YGMeasureTest/YogaTest.measure_with_fixed_size
+  still failing (sample):
+    YGMeasureTest/YogaDeathTest.cannot_add_nonnull_measure_func_to_non_leaf_node  [fail] vendor/yoga/tests/YGMeasureTest.cpp:589: Expected: YGNodeSetMeasureFunc(root, _measure) throws an exception of type std::logic_error. Actual: it throws nothing.
 """
 
 [ticket]
 id = "RT-04"
-title = "calculate_baseline"
-scope = ["crates/barre/src/algorithm/baseline.rs"]
-spec = ["calculateBaseline", "isBaselineLayout"]
-target = ["generated/YGAlignItemsTest/YogaTest.align_baseline", "YGAlignBaselineTest/", "YGBaselineFuncTest/"]
-body = "Port yoga/algorithm/Baseline.cpp. Both functions exist with Yoga's signatures and call not_implemented!. resolve_child_alignment is in algorithm/align.rs. barre has no event system: Yoga's Event::publish calls are not ported (docs/API.md)."
+title = "Node::setMeasureFunc"
+scope = ["crates/barre/src/node/mod.rs"]
+spec = ["Node::setMeasureFunc", "YGNodeSetMeasureFunc"]
+target = ["YGMeasureTest/"]
+body = "Port Node::setMeasureFunc into Node::set_measure_func (it exists and calls not_implemented!). Fatal assertions return Err(FatalError) from crate::debug::assert_fatal; YGNodeSetMeasureFunc already turns that into Yoga's exception."
 
 [files]
 before = '''
-//! Baselines (`yoga/algorithm/Baseline.cpp`).
+    #[inline]
+    pub fn set_is_reference_baseline(&self, value: bool) {
+        self.is_reference_baseline.set(value);
+    }
+    #[inline]
+    pub fn set_owner(&self, owner: Option<NodePtr>) {
+        self.owner.set(owner);
+    }
 
-use crate::algorithm::align::resolve_child_alignment;
-use crate::algorithm::flex_direction::is_column;
-use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
-use crate::node::Node;
+    /// `Node::setMeasureFunc`.
+    #[allow(unused_variables)]
+    pub fn set_measure_func(&self, measure_func: Option<MeasureFunc>) -> Result<(), FatalError> {
+        crate::not_implemented!("Node::setMeasureFunc")
+    }
 
-/// Yoga: calculateBaseline (algorithm/Baseline.cpp)
-pub fn calculate_baseline(node: &Node) -> f32 {
-    not_implemented!("calculate_baseline")
-}
-
-/// Yoga: isBaselineLayout (algorithm/Baseline.cpp)
-pub fn is_baseline_layout(node: &Node) -> bool {
-    not_implemented!("is_baseline_layout")
-}
+    #[inline]
+    pub fn set_min_content_measure_func(&self, func: Option<MeasureFunc>) {
+        self.min_content_measure_func.set(func);
+    }
 '''
 after = '''
-//! Baselines (`yoga/algorithm/Baseline.cpp`).
-
-use crate::algorithm::align::resolve_child_alignment;
-use crate::algorithm::flex_direction::is_column;
-use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
-use crate::node::Node;
-
-/// Yoga: calculateBaseline (algorithm/Baseline.cpp)
-pub fn calculate_baseline(node: &Node) -> f32 {
-    if node.has_baseline_func() {
-        let baseline = node.baseline(
-            node.layout().measured_dimension(Dimension::Width),
-            node.layout().measured_dimension(Dimension::Height),
-        );
-        if baseline.is_nan() {
-            // A baseline function that cannot answer means "no baseline":
-            // align the node by its top edge.
-            return 0.0;
-        }
-        return baseline;
+    #[inline]
+    pub fn set_is_reference_baseline(&self, value: bool) {
+        self.is_reference_baseline.set(value);
+    }
+    #[inline]
+    pub fn set_owner(&self, owner: Option<NodePtr>) {
+        self.owner.set(owner);
     }
 
-    let mut baseline_child: Option<&Node> = None;
-    for child in node.layout_children() {
-        if child.line_index() > 0 {
-            break;
+    /// `Node::setMeasureFunc`.
+    pub fn set_measure_func(&self, measure_func: Option<MeasureFunc>) -> Result<(), FatalError> {
+        if measure_func.is_none() {
+            self.set_node_type(NodeType::Default);
+        } else {
+            if !self.children.is_empty() {
+                // Nodes with measure functions cannot have children. Keep the
+                // tree usable: leave the node as it is and ignore the function.
+                log(
+                    self,
+                    LogLevel::Warn,
+                    "Cannot set measure function: Nodes with measure functions cannot have children.",
+                );
+                return Ok(());
+            }
+            self.set_node_type(NodeType::Text);
         }
-        if child.style().position_type() == PositionType::Absolute {
-            continue;
-        }
-        if resolve_child_alignment(node, child) == Align::Baseline || child.is_reference_baseline() {
-            baseline_child = Some(child);
-            break;
-        }
-        if baseline_child.is_none() {
-            baseline_child = Some(child);
-        }
+        self.measure_func.set(measure_func);
+        Ok(())
     }
 
-    let Some(baseline_child) = baseline_child else {
-        return node.layout().measured_dimension(Dimension::Height);
-    };
-
-    let baseline = calculate_baseline(baseline_child);
-    baseline + baseline_child.layout().position(PhysicalEdge::Top)
-}
-
-/// Yoga: isBaselineLayout (algorithm/Baseline.cpp)
-pub fn is_baseline_layout(node: &Node) -> bool {
-    if is_column(node.style().flex_direction()) {
-        return false;
+    #[inline]
+    pub fn set_min_content_measure_func(&self, func: Option<MeasureFunc>) {
+        self.min_content_measure_func.set(func);
     }
-    if node.style().align_items() == Align::Baseline {
-        return true;
-    }
-    for child in node.layout_children() {
-        if child.style().position_type() != PositionType::Absolute
-            && child.style().align_self() == Align::Baseline
-        {
-            return true;
-        }
-    }
-    false
-}
 '''

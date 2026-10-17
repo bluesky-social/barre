@@ -1,6 +1,6 @@
 expect = ["reject"]
 reject = true
-why = "With no baseline function it returns 80% of the node's height (a guess about text) instead of walking the children for the baseline child; never recurses."
+why = "Without a baseline function it returns 80% of the node's height (a guess about text) instead of finding the baseline child and recursing."
 
 path = "crates/barre/src/algorithm/baseline.rs"
 
@@ -12,78 +12,97 @@ conformance target: 21 tests; passing before 0, after 6 (+6 new, 0 regressions, 
     generated/YGAlignItemsTest/YogaTest.align_baseline
     YGBaselineFuncTest/YogaTest.align_baseline_customer_func
   still failing (sample):
-    generated/YGAlignItemsTest/YogaTest.align_baseline_child  [fail] Expected equality of these values: 40 YGNodeLayoutGetTop(root_child1): 30
+    generated/YGAlignItemsTest/YogaTest.align_baseline_child  [fail] vendor/yoga/tests/generated/YGAlignItemsTest.cpp:1203: Expected equality of these values: 40 YGNodeLayoutGetTop(root_child1): 30
 """
 
 [ticket]
 id = "RT-03"
 title = "calculate_baseline"
 scope = ["crates/barre/src/algorithm/baseline.rs"]
-spec = ["calculateBaseline", "isBaselineLayout"]
+spec = ["calculateBaseline"]
 target = ["generated/YGAlignItemsTest/YogaTest.align_baseline", "YGAlignBaselineTest/", "YGBaselineFuncTest/"]
-body = "Port yoga/algorithm/Baseline.cpp. Both functions exist with Yoga's signatures and call not_implemented!. resolve_child_alignment is in algorithm/align.rs."
+body = "Port calculateBaseline into calculate_baseline. The baseline-function branch is already there (LayoutNode::baseline calls the function and does Yoga's NaN check); port the rest. resolve_child_alignment is in algorithm/align.rs. barre has no event system: Yoga's Event::publish calls are not ported (docs/API.md)."
 
 [files]
 before = '''
-//! Baselines (`yoga/algorithm/Baseline.cpp`).
+//! Baseline alignment (`yoga/algorithm/Baseline.cpp`).
 
 use crate::algorithm::align::resolve_child_alignment;
 use crate::algorithm::flex_direction::is_column;
 use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
-use crate::node::Node;
+use crate::node::{LayoutNode, NodeExt};
 
-/// Yoga: calculateBaseline (algorithm/Baseline.cpp)
-pub fn calculate_baseline(node: &Node) -> f32 {
-    not_implemented!("calculate_baseline")
-}
-
-/// Yoga: isBaselineLayout (algorithm/Baseline.cpp)
-pub fn is_baseline_layout(node: &Node) -> bool {
-    not_implemented!("is_baseline_layout")
-}
-'''
-after = '''
-//! Baselines (`yoga/algorithm/Baseline.cpp`).
-
-use crate::algorithm::align::resolve_child_alignment;
-use crate::algorithm::flex_direction::is_column;
-use crate::debug::assert_fatal::assert_fatal_with_node;
-use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
-use crate::node::Node;
-
-/// Where the first line of text sits in a box of the given height, for nodes
-/// that do not report their own baseline.
-const DEFAULT_BASELINE_RATIO: f32 = 0.8;
-
-/// Yoga: calculateBaseline (algorithm/Baseline.cpp)
-pub fn calculate_baseline(node: &Node) -> f32 {
-    let layout = node.layout();
+/// `calculateBaseline`: the baseline of `node`, as an offset from its top
+/// edge.
+pub fn calculate_baseline<'a, N: LayoutNode<'a>>(node: N) -> f32 {
     if node.has_baseline_func() {
-        let baseline = node.baseline(
-            layout.measured_dimension(Dimension::Width),
-            layout.measured_dimension(Dimension::Height),
+        // `LayoutNode::baseline` calls the function and does Yoga's checks.
+        return node.baseline(
+            node.layout().measured_dimension(Dimension::Width),
+            node.layout().measured_dimension(Dimension::Height),
         );
-        assert_fatal_with_node(
-            node,
-            !baseline.is_nan(),
-            "Expect custom baseline function to not return NaN",
-        );
-        return baseline;
     }
-    layout.measured_dimension(Dimension::Height) * DEFAULT_BASELINE_RATIO
+    crate::not_implemented!("calculateBaseline")
 }
 
-/// Yoga: isBaselineLayout (algorithm/Baseline.cpp)
-pub fn is_baseline_layout(node: &Node) -> bool {
+/// `isBaselineLayout`.
+pub fn is_baseline_layout<'a, N: LayoutNode<'a>>(node: N) -> bool {
     if is_column(node.style().flex_direction()) {
         return false;
     }
     if node.style().align_items() == Align::Baseline {
         return true;
     }
-    node.layout_children().any(|child| {
-        child.style().position_type() != PositionType::Absolute
+    for child in node.layout_children() {
+        if child.style().position_type() != PositionType::Absolute
             && child.style().align_self() == Align::Baseline
-    })
+        {
+            return true;
+        }
+    }
+    false
+}
+'''
+after = '''
+//! Baseline alignment (`yoga/algorithm/Baseline.cpp`).
+
+use crate::algorithm::align::resolve_child_alignment;
+use crate::algorithm::flex_direction::is_column;
+use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
+use crate::node::{LayoutNode, NodeExt};
+
+/// Where the first line of text sits in a box of the given height, for nodes
+/// that do not report their own baseline.
+const DEFAULT_BASELINE_RATIO: f32 = 0.8;
+
+/// `calculateBaseline`: the baseline of `node`, as an offset from its top
+/// edge.
+pub fn calculate_baseline<'a, N: LayoutNode<'a>>(node: N) -> f32 {
+    if node.has_baseline_func() {
+        // `LayoutNode::baseline` calls the function and does Yoga's checks.
+        return node.baseline(
+            node.layout().measured_dimension(Dimension::Width),
+            node.layout().measured_dimension(Dimension::Height),
+        );
+    }
+    node.layout().measured_dimension(Dimension::Height) * DEFAULT_BASELINE_RATIO
+}
+
+/// `isBaselineLayout`.
+pub fn is_baseline_layout<'a, N: LayoutNode<'a>>(node: N) -> bool {
+    if is_column(node.style().flex_direction()) {
+        return false;
+    }
+    if node.style().align_items() == Align::Baseline {
+        return true;
+    }
+    for child in node.layout_children() {
+        if child.style().position_type() != PositionType::Absolute
+            && child.style().align_self() == Align::Baseline
+        {
+            return true;
+        }
+    }
+    false
 }
 '''

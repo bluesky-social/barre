@@ -1,6 +1,6 @@
 expect = ["revise", "reject"]
 reject = true
-why = "setFlexStartLayoutPosition leaves out the child's flex-start margin (and silences the now-unused parameters); setFlexEndLayoutPosition is right. Absolutely positioned children with a start margin and no insets land on the border/padding edge."
+why = "setFlexStartLayoutPosition leaves out the child's flex-start margin (the unused parameters stay silenced by the skeleton's allow); setFlexEndLayoutPosition is right. Absolutely positioned children with a start margin and no insets land on the border/padding edge."
 
 path = "crates/barre/src/algorithm/absolute_layout.rs"
 
@@ -13,8 +13,8 @@ conformance target: 64 tests; passing before 12, after 27 (+15 new, 0 regression
     generated/YGAbsolutePositionTest/YogaTest.absolute_layout_border
     generated/YGAbsolutePositionTest/YogaTest.absolute_layout_padding
   still failing (sample):
-    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_column_reverse_margin_border  [fail] Expected equality of these values: 5 YGNodeLayoutGetLeft(root_child0): 0
-    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_justify_content_center  [crash] not implemented: justify_absolute_child
+    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_column_reverse_margin_border  [fail] vendor/yoga/tests/generated/YGAbsolutePositionTest.cpp:1764: Expected equality of these values: 5 YGNodeLayoutGetLeft(root_child0): 0
+    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_justify_content_center  [crash] not implemented: justifyAbsoluteChild
 """
 
 [ticket]
@@ -23,54 +23,62 @@ title = "set_flex_start_layout_position"
 scope = ["crates/barre/src/algorithm/absolute_layout.rs"]
 spec = ["setFlexStartLayoutPosition", "setFlexEndLayoutPosition"]
 target = ["generated/YGAbsolutePositionTest/"]
-body = "Port setFlexStartLayoutPosition and setFlexEndLayoutPosition from yoga/algorithm/AbsoluteLayout.cpp. get_position_of_opposite_edge already exists in this file. The other absolute layout functions are separate tickets."
+body = "Port setFlexStartLayoutPosition and setFlexEndLayoutPosition from yoga/algorithm/AbsoluteLayout.cpp; both exist and call not_implemented!. get_position_of_opposite_edge already exists in this file. The other absolute layout functions are separate tickets."
 
 [files]
 before = '''
 //! Absolutely positioned children (`yoga/algorithm/AbsoluteLayout.cpp`).
 
-use crate::algorithm::flex_direction::{flex_end_edge, flex_start_edge};
-use crate::enums::{Direction, Display, Errata, FlexDirection};
-use crate::node::Node;
+use crate::algorithm::calculate_layout::{LayoutData, cleanup_contents_nodes_recursively};
+use crate::algorithm::flex_direction::{flex_end_edge, flex_start_edge, is_row, resolve_cross_direction, resolve_direction};
+use crate::algorithm::sizing_mode::SizingMode;
+use crate::algorithm::trailing_position::{needs_trailing_position, set_child_trailing_position};
+use crate::enums::{Dimension, Direction, Display, Errata, FlexDirection, PhysicalEdge, PositionType};
+use crate::node::{LayoutNode, NodeExt};
 
-/// Yoga: setFlexStartLayoutPosition (algorithm/AbsoluteLayout.cpp)
-fn set_flex_start_layout_position(
-    parent: &Node,
-    child: &Node,
+/// `setFlexStartLayoutPosition`.
+#[allow(unused_variables)]
+fn set_flex_start_layout_position<'a, N: LayoutNode<'a>>(
+    parent: N,
+    child: N,
     direction: Direction,
     axis: FlexDirection,
     containing_block_width: f32,
 ) {
-    not_implemented!("set_flex_start_layout_position")
+    crate::not_implemented!("setFlexStartLayoutPosition")
 }
 
-/// Yoga: setFlexEndLayoutPosition (algorithm/AbsoluteLayout.cpp)
-fn set_flex_end_layout_position(
-    parent: &Node,
-    child: &Node,
+/// `setFlexEndLayoutPosition`.
+#[allow(unused_variables)]
+fn set_flex_end_layout_position<'a, N: LayoutNode<'a>>(
+    parent: N,
+    child: N,
     direction: Direction,
     axis: FlexDirection,
     containing_block_width: f32,
 ) {
-    not_implemented!("set_flex_end_layout_position")
+    crate::not_implemented!("setFlexEndLayoutPosition")
 }
 '''
 after = '''
 //! Absolutely positioned children (`yoga/algorithm/AbsoluteLayout.cpp`).
 
-use crate::algorithm::flex_direction::{flex_end_edge, flex_start_edge};
-use crate::enums::{Direction, Display, Errata, FlexDirection};
-use crate::node::Node;
+use crate::algorithm::calculate_layout::{LayoutData, cleanup_contents_nodes_recursively};
+use crate::algorithm::flex_direction::{flex_end_edge, flex_start_edge, is_row, resolve_cross_direction, resolve_direction};
+use crate::algorithm::sizing_mode::SizingMode;
+use crate::algorithm::trailing_position::{needs_trailing_position, set_child_trailing_position};
+use crate::enums::{Dimension, Direction, Display, Errata, FlexDirection, PhysicalEdge, PositionType};
+use crate::node::{LayoutNode, NodeExt};
 
-/// Yoga: setFlexStartLayoutPosition (algorithm/AbsoluteLayout.cpp)
-fn set_flex_start_layout_position(
-    parent: &Node,
-    child: &Node,
+/// `setFlexStartLayoutPosition`.
+#[allow(unused_variables)]
+fn set_flex_start_layout_position<'a, N: LayoutNode<'a>>(
+    parent: N,
+    child: N,
     direction: Direction,
     axis: FlexDirection,
     containing_block_width: f32,
 ) {
-    let _ = (direction, containing_block_width);
     let mut position = parent.layout().border(flex_start_edge(axis));
     // https://www.w3.org/TR/css-grid-1/#abspos
     // absolute positioned grid items are positioned relative to the padding
@@ -83,10 +91,10 @@ fn set_flex_start_layout_position(
     child.set_layout_position(position, flex_start_edge(axis));
 }
 
-/// Yoga: setFlexEndLayoutPosition (algorithm/AbsoluteLayout.cpp)
-fn set_flex_end_layout_position(
-    parent: &Node,
-    child: &Node,
+/// `setFlexEndLayoutPosition`.
+fn set_flex_end_layout_position<'a, N: LayoutNode<'a>>(
+    parent: N,
+    child: N,
     direction: Direction,
     axis: FlexDirection,
     containing_block_width: f32,

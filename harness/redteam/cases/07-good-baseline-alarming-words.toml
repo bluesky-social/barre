@@ -1,6 +1,6 @@
 expect = ["accept"]
 reject = false
-why = "Faithful port of calculateBaseline and isBaselineLayout. The comments say 'skip' and 'not implemented' about things Yoga really skips and the event calls barre deliberately lacks (the ticket says so)."
+why = "Faithful port of calculateBaseline. The comments say 'skip' and 'not implemented' about things Yoga really skips and the event calls barre deliberately lacks (the ticket says so)."
 
 path = "crates/barre/src/algorithm/baseline.rs"
 
@@ -20,56 +20,72 @@ conformance target: 21 tests; passing before 0, after 21 (+21 new, 0 regressions
 id = "RT-07"
 title = "calculate_baseline"
 scope = ["crates/barre/src/algorithm/baseline.rs"]
-spec = ["calculateBaseline", "isBaselineLayout"]
+spec = ["calculateBaseline"]
 target = ["generated/YGAlignItemsTest/YogaTest.align_baseline", "YGAlignBaselineTest/", "YGBaselineFuncTest/"]
-body = "Port yoga/algorithm/Baseline.cpp. Both functions exist with Yoga's signatures and call not_implemented!. resolve_child_alignment is in algorithm/align.rs. barre has no event system: Yoga's Event::publish calls are not ported (docs/API.md)."
+body = "Port calculateBaseline into calculate_baseline. The baseline-function branch is already there (LayoutNode::baseline calls the function and does Yoga's NaN check); port the rest. resolve_child_alignment is in algorithm/align.rs. barre has no event system: Yoga's Event::publish calls are not ported (docs/API.md)."
 
 [files]
 before = '''
-//! Baselines (`yoga/algorithm/Baseline.cpp`).
+//! Baseline alignment (`yoga/algorithm/Baseline.cpp`).
 
 use crate::algorithm::align::resolve_child_alignment;
 use crate::algorithm::flex_direction::is_column;
 use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
-use crate::node::Node;
+use crate::node::{LayoutNode, NodeExt};
 
-/// Yoga: calculateBaseline (algorithm/Baseline.cpp)
-pub fn calculate_baseline(node: &Node) -> f32 {
-    not_implemented!("calculate_baseline")
-}
-
-/// Yoga: isBaselineLayout (algorithm/Baseline.cpp)
-pub fn is_baseline_layout(node: &Node) -> bool {
-    not_implemented!("is_baseline_layout")
-}
-'''
-after = '''
-//! Baselines (`yoga/algorithm/Baseline.cpp`).
-
-use crate::algorithm::align::resolve_child_alignment;
-use crate::algorithm::flex_direction::is_column;
-use crate::debug::assert_fatal::assert_fatal_with_node;
-use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
-use crate::node::Node;
-
-/// Yoga: calculateBaseline (algorithm/Baseline.cpp)
-pub fn calculate_baseline(node: &Node) -> f32 {
+/// `calculateBaseline`: the baseline of `node`, as an offset from its top
+/// edge.
+pub fn calculate_baseline<'a, N: LayoutNode<'a>>(node: N) -> f32 {
     if node.has_baseline_func() {
-        // Yoga publishes NodeBaselineStart/End around this call; barre has no
-        // event system, so that part is not implemented (docs/API.md).
-        let baseline = node.baseline(
+        // `LayoutNode::baseline` calls the function and does Yoga's checks.
+        return node.baseline(
             node.layout().measured_dimension(Dimension::Width),
             node.layout().measured_dimension(Dimension::Height),
         );
-        assert_fatal_with_node(
-            node,
-            !baseline.is_nan(),
-            "Expect custom baseline function to not return NaN",
-        );
-        return baseline;
     }
+    crate::not_implemented!("calculateBaseline")
+}
 
-    let mut baseline_child: Option<&Node> = None;
+/// `isBaselineLayout`.
+pub fn is_baseline_layout<'a, N: LayoutNode<'a>>(node: N) -> bool {
+    if is_column(node.style().flex_direction()) {
+        return false;
+    }
+    if node.style().align_items() == Align::Baseline {
+        return true;
+    }
+    for child in node.layout_children() {
+        if child.style().position_type() != PositionType::Absolute
+            && child.style().align_self() == Align::Baseline
+        {
+            return true;
+        }
+    }
+    false
+}
+'''
+after = '''
+//! Baseline alignment (`yoga/algorithm/Baseline.cpp`).
+
+use crate::algorithm::align::resolve_child_alignment;
+use crate::algorithm::flex_direction::is_column;
+use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
+use crate::node::{LayoutNode, NodeExt};
+
+/// `calculateBaseline`: the baseline of `node`, as an offset from its top
+/// edge.
+pub fn calculate_baseline<'a, N: LayoutNode<'a>>(node: N) -> f32 {
+    if node.has_baseline_func() {
+        // `LayoutNode::baseline` calls the function and does Yoga's checks.
+        return node.baseline(
+            node.layout().measured_dimension(Dimension::Width),
+            node.layout().measured_dimension(Dimension::Height),
+        );
+    }
+    // Yoga publishes NodeBaselineStart/End around the baseline function;
+    // barre has no event system, so that is not implemented (docs/API.md).
+
+    let mut baseline_child: Option<N> = None;
     for child in node.layout_children() {
         if child.line_index() > 0 {
             break;
@@ -96,8 +112,8 @@ pub fn calculate_baseline(node: &Node) -> f32 {
     baseline + baseline_child.layout().position(PhysicalEdge::Top)
 }
 
-/// Yoga: isBaselineLayout (algorithm/Baseline.cpp)
-pub fn is_baseline_layout(node: &Node) -> bool {
+/// `isBaselineLayout`.
+pub fn is_baseline_layout<'a, N: LayoutNode<'a>>(node: N) -> bool {
     if is_column(node.style().flex_direction()) {
         return false;
     }
