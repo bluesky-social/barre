@@ -75,13 +75,28 @@ whatever it picks up.
    - Branches `perf-replay-skip` and `scratch-noreplay` are unlanded
      experiments from the stopped perf agent. Check them before redoing that
      work.
-3. **The relayout == fresh fuzzer:** handoff in `/tmp/barre-fuzz-handoff/`.
-   It finds relayout ≠ fresh in about 6% of random trees after T-0006 and
-   T-0010. Turn it into a tool in the repo with a test-case minimiser. Known
-   causes:
-   - pixel-grid rounding on cached subtrees (seed 6, scale 1);
-   - cache-slot occupancy (not yet isolated);
-   - a run that hung at 0% CPU (probably a full stdout pipe; check).
+3. **The relayout == fresh fuzzer** is now a repo tool: `./fuzz`, source in
+   `fuzzer/`, how to use it and the failure classes in `docs/FUZZ.md`, 13
+   minimised repros in `fuzzer/cases/` (`./fuzz check fuzzer/cases/X.case`;
+   `./fuzz --yoga check ...` to compare with real Yoga). At seeds 1-10000 it
+   fails 2358 of 30000 (seed, mode) pairs (7.9%), of which Yoga fails 19315
+   (64%) of the same pairs. What is left to do, in order of importance:
+   - **Barre-only failures** (23 pairs at default knobs, more with `--wide`
+     and `--slots`): relayout ≠ fresh on barre where Yoga is fine. These
+     break our own correctness bar (`barre-only-*`, `slots-barre-only`), and
+     probably come from T-0006's anchor or T-0010's cache keys. Trace the
+     mechanism (the doc's names are inferred from minimised trees, not
+     traced), fix, and add a conformance test per repro.
+   - **Failures shared with Yoga:** margin in compatible-measurement reuse
+     (`margin-reuse-*`) and the root cache hit skipping pixel rounding
+     (`rounding-root-cache-hit`) were checked against the source;
+     `rounding-cached-subtree` was not. Fixing them makes barre differ from
+     Yoga, so record each in `conformance/divergences.md` (check whether it
+     belongs with yoga#1784's entry).
+   - **Non-finite fresh layouts** (`nonfinite-*`): NaN/inf in barre where
+     Yoga gives finite values. Not a relayout difference, but a bug.
+   - **The "hang" was not a hang** (a quadratic Python driver, not barre or
+     a pipe; details in `docs/FUZZ.md`). Nothing to do.
 4. **Small things:**
    - Once no agent commits to `main`, switch the main checkout to `stack`
      (kahvi's setup).
