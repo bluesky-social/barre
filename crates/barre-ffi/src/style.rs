@@ -183,7 +183,7 @@ macro_rules! number_setter {
 }
 
 number_setter!(YGNodeStyleSetFlex, flex, set_flex);
-number_setter!(YGNodeStyleSetFlexGrow, flex_grow, set_flex_grow);
+number_setter!(YGNodeStyleSetFlexGrow, flex, set_flex);
 number_setter!(YGNodeStyleSetFlexShrink, flex_shrink, set_flex_shrink);
 
 #[unsafe(no_mangle)]
