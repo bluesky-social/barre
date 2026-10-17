@@ -1,9 +1,8 @@
 # Landing through stacked PRs
 
-> **barre runs locally for now** (no `[stack] repo`; the local merge bot
-> advances `main` after a full `./conf` run, docs/HARNESS.md). This mode is
-> kahvi's, kept working with names changed, for when barre has CI. Turning it
-> on needs the CI workflow below, which does not exist yet.
+This is how barre lands work on `bluesky-social/barre` (from kahvi). Without
+`[stack] repo` the orchestrator falls back to the local merge bot, which
+advances a local branch after a full `./conf` run (docs/HARNESS.md).
 
 In this mode the swarm does not advance an integration branch after a local
 full conformance run. Accepted work goes into a stack of pull requests on
@@ -74,24 +73,56 @@ never merges anything.
 layer (no swarm stop). A layer that touches a path matching `[stack]
 stress_paths` gets the `stress_label` label, which a workflow can use to add
 extra shards (kahvi used this for GC stress; barre could use it for
-differential fuzzing against Yoga). The 0-regression rule is unchanged; CI
-enforces it.
+differential fuzzing against Yoga; nothing reads it yet). The 0-regression
+rule is unchanged; CI enforces it.
+
+This is the only way anything but a GitHub merge reaches `main`: architect
+agents (perf work, the RN shim, docs) commit on their own branch, then
+
+```
+git merge stack                     # in the branch's worktree, only if it conflicts with the stack top
+./orch land my-branch               # from the main checkout; needs a running `./orch run`
+```
+
+The branch becomes the next layer (alone, never batched with tickets), gets
+the same CI, and Samuel merges it with the rest. If its CI is red the
+stacker drops it and logs `architect branch ... is red in CI`; fix the
+branch and land it again. With no orchestrator running, `./orch land` only
+queues it; the next `./orch run` stacks it and stays up until its CI is
+judged. Never commit to `main` or `stack` directly: `stack` is rebuilt by
+the stacker (`git reset --keep`), and `main` only moves by merging PRs (and
+by CI's README commits).
 
 ## What CI provides
 
-Owned by the CI workflow (`.github/workflows/`):
+`.github/workflows/ci.yml`:
 
 1. Runs on `pull_request` for every base branch (stacked PRs' bases are other
-   layers, not `main`), and on pushes to `main`.
-2. Measures regressions against the PR head's own
-   `conformance/expected-pass.txt`.
-3. One aggregate check run named `conformance`, plus an artifact
-   `conf-results` holding the merged results of all shards: per-test JSONL
-   (`id`, `status`, `reason`, `not_implemented`, as `harness/orch/conformance.py`
-   normalises `./conf --json`), the passing ids in `expected-pass.txt`
-   format, and a summary with the regressions and whether the run was valid
-   (canaries, no runner loss).
-4. Extra shards when the PR has the `stress_label` label.
+   layers, not `main`), and on pushes to `main`. It tests the PR head itself,
+   not GitHub's merge with the base.
+2. `fmt, clippy, test` (ubuntu): `cargo fmt --check`, the gate's clippy,
+   `cargo test`. A failure here makes the layer red without waiting for the
+   suite.
+3. `conformance` (macOS arm64, a few minutes, no shards: the suite takes
+   seconds): the full `./conf` against the PR head's own
+   `conformance/expected-pass.txt`, with `--update-expected` into the
+   artifact's copy. Artifact `conf-results`
+   (`.github/scripts/conf_results.py`): `results.jsonl` (`id`, `status`,
+   `reason`, `not_implemented`, as `harness/orch/conformance.py` normalises
+   `./conf --json`), `summary.json` (`./conf --summary-json` plus `runs`,
+   `build_failed`: `valid`, `regressions`, `new_passes` decide) and
+   `expected-pass.txt` (this run's passes, the baseline for the layer above).
+   A compile error in barre is a valid, failed run (red); `./conf` failing
+   before it ran anything leaves no summary (CI's problem: re-run once, then
+   `stuck`).
+4. `runner self-check (real Yoga)` (macOS): `./conf --yoga`, which must pass
+   everything in scope with the documented Yoga bugs as `xfail`. Not in
+   `required_checks`: workers cannot change the runner, the suite or the pin.
+5. On pushes to `main` only, `update README results` rewrites the README's
+   results rows from both artifacts and commits `[skip ci]` with
+   `GITHUB_TOKEN` (which triggers no further runs). `bench.yml` does the same
+   for the benchmark table and keeps history on the `bench-results` branch.
+   Pull requests, including ones from forks, only ever get a read-only token.
 
 ## Local work
 
@@ -101,27 +132,28 @@ and is snapshotted to `orch-runs` like everything else.
 
 ## Running it
 
-`work/orch.local.toml`:
+`work/orch.local.toml` on the machine that runs the swarm (the rest of
+`[stack]` is in `harness/orch.toml`):
 
 ```toml
 branch = "stack"                 # local only: the stack top, which workers start from
 [stack]
-repo = "mozzius/barre"
-trunk = "main"                   # or the branch of an open PR the stack sits on
+repo = "bluesky-social/barre"
+# trunk = "some-branch"          # default main; or the branch of an open PR the stack sits on
 # trunk_pr = 3                   # that PR, put at the bottom of the GitHub stack
-check = "conformance"            # the aggregate check whose artifact decides
-required_checks = ["conformance", "fmt, clippy, test"]
-artifact = "conf-results"        # results.jsonl, summary.json, expected-pass.txt
-max_layer = 8
 ```
 
-The main checkout stays on `branch`; the stacker moves it as the stack
-changes. `./orch stack` shows the layers, `./orch stack retry` re-stacks a
+`git branch stack origin/main` once before the first run. The main checkout
+should stay on `branch`, so the trusted runner (`./conf`, `skip.txt`) the
+gates use is the stack top's; the stacker moves it (`reset --keep`) as the
+stack changes. If the checkout is on another branch the stacker only moves
+the `stack` ref, and the gates run whatever that checkout has. `./orch stack` shows the layers, `./orch stack retry` re-stacks a
 layer stuck on broken CI once CI is fixed, `./orch land BRANCH` queues an
 architect branch (merge the stack top into it first if it conflicts).
 
-From this container: PRs, labels, comments, the stacks API, check runs,
-artifact downloads and workflow re-runs work over REST. Deleting branches
-does not, so closed layers' branches stay until someone deletes them (turn on
-"Automatically delete head branches" for merged ones). A PR in a GitHub stack
-cannot be retargeted by hand; GitHub retargets it when the PR below merges.
+The stacker uses `gh api` (REST only) for PRs, labels, comments, the stacks
+API, check runs, artifact downloads and workflow re-runs, so the machine
+needs `gh` logged in with write access. It never deletes branches: closed
+layers' branches stay until someone deletes them ("Automatically delete
+head branches" is on for merged ones). A PR in a GitHub stack cannot be
+retargeted by hand; GitHub retargets it when the PR below merges.

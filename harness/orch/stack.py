@@ -75,6 +75,9 @@ class Stacker:
         self.stress_paths = re.compile(s["stress_paths"]) if s.get("stress_paths") else None
         self.stress_label = s.get("stress_label", "stress")
         self.poll_seconds = int(s.get("poll_seconds", 60))
+        # Layer branches are PREFIX + the layer id; a scratch orchestrator
+        # (its own BARRE_WORK, so its own ids) needs its own prefix.
+        self.branch_prefix = s.get("branch_prefix", "stack/")
         self.pool_loader = pool_loader
         self.lock = threading.RLock()
         self.wake = threading.Event()
@@ -274,7 +277,7 @@ class Stacker:
                 "INSERT INTO layers (branch, base, head, status, items, created, updated) VALUES ('', ?, ?, 'pending', ?, ?, ?)",
                 (base_branch, head, json.dumps([dict(i) for i in group]), now, now))
             lid = cur.lastrowid
-        branch = f"stack/{lid:04d}"
+        branch = f"{self.branch_prefix}{lid:04d}"
         self.db.q("UPDATE layers SET branch = ? WHERE id = ?", branch, lid)
         for delay in (0, 2, 4, 8, 16):
             time.sleep(delay)

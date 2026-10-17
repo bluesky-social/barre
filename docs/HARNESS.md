@@ -23,10 +23,21 @@ gate report and verdicts, the logs) is versioned on its own branch,
 `orch-runs`: the orchestrator commits a snapshot after every attempt (and
 pushes it if `push = true`). The code branch stays free of these commits.
 
-barre lands work with the **local merge bot**: accepted attempts are
-cherry-picked onto `branch` (`main`) after a full local `./conf` run. The
-stacked-PR mode (docs/STACKS.md) is still there for when barre has CI;
-setting `[stack] repo` turns it on.
+Accepted work lands through **stacked PRs** on `bluesky-social/barre` whose
+CI runs the full suite (docs/STACKS.md): the stacker moves the local `stack`
+branch, which workers start from, and opens a PR per layer; Samuel merges
+them from the bottom. It is on where `work/orch.local.toml` sets `[stack]
+repo` (and `branch = "stack"`); without it (e.g. a scratch orchestrator under
+`BARRE_WORK`) the local merge bot cherry-picks accepted attempts onto
+`branch` after a full local `./conf` run and never pushes.
+
+**Architect work lands the same way.** Nothing but a PR merge moves `main`
+(CI also commits README updates to it). Commit on your own branch (a
+worktree is fine), then from the main checkout `./orch land BRANCH`: the
+branch becomes its own layer on top of the stack, with the same CI, and
+merges with the rest. Merge `stack` into the branch first if it conflicts.
+`./orch stack` shows where it is. Never commit on `stack` (the stacker
+rebuilds it) or push `main`.
 
 ## The spec (`./spec`, `harness/spec.py`)
 
@@ -252,12 +263,13 @@ comparisons.
   - the engine spine, `docs/API.md`, tickets, skip list, policy, prompts;
   - reviewing `needs-architect` and `blocked` tickets;
   - turning triage output into tickets;
-  - commits directly to the branch, outside the pipeline.
+  - commits on its own branch, outside the pipeline, and lands it with
+    `./orch land BRANCH` (its own stack layer, same CI as the swarm's).
 - **Workers** (`claude -p`, Haiku by default). One ticket each, scoped files
   only.
 - **Verifier** (Haiku screen, Sonnet confirm). Blind, structured output,
   calibrated against the red-team set.
-- **Merge bot** (or the stacker). Plain code, no model.
+- **Stacker** (or, without `[stack] repo`, the merge bot). Plain code, no model.
 
 ## Calibration log
 

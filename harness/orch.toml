@@ -65,14 +65,17 @@ max_merge_batch = 8       # accepted attempts the merge bot lands with one full 
 extra_args = []           # appended to every ./conf invocation
 
 [stack]
-# Land through stacked PRs whose CI runs the full suite (docs/STACKS.md).
-# Unset repo = the local merge bot (barre's mode for now). Set per machine in
-# work/orch.local.toml.
-# repo = "mozzius/barre"
+# Land through stacked PRs whose CI runs the full suite (docs/STACKS.md),
+# instead of the local merge bot. Turned on per machine in
+# work/orch.local.toml (with branch = "stack"), so a scratch orchestrator
+# (BARRE_WORK=..., the smoke test) never opens PRs by accident:
+#   branch = "stack"
+#   [stack]
+#   repo = "bluesky-social/barre"
 trunk = "main"
-check = "conformance"
-required_checks = ["conformance"]
-artifact = "conf-results"
+check = "conformance"                                 # the job whose artifact decides (.github/workflows/ci.yml)
+required_checks = ["conformance", "fmt, clippy, test"]
+artifact = "conf-results"                             # results.jsonl, summary.json, expected-pass.txt
 max_layer = 8
 poll_seconds = 60
 # stress_paths = "^crates/barre/src/(cache|node)"   # layers touching these get stress_label
