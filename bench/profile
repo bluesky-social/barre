@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Sample-profile one bench workload with samply and print hotspot tables.
+
+  bench/profile rn/feed50/fresh                 # barre, 4 s
+  bench/profile rn/feed50/text_change --engine yoga --time-ms 8000
+  bench/profile rn/feed50/fresh -- --rev HEAD~3  # args after -- go to bench/run
+
+Needs `samply` and `rustfilt` on PATH or in $SAMPLY_ROOT/bin (default
+/tmp/samply-install: `cargo install --locked samply rustfilt --root
+/tmp/samply-install`). Frames inside the engine are resolved with
+`atos -i` against a dsymutil'd copy of the binary, so inlined Rust and C++
+functions appear as their own frames (fat LTO inlines most of barre into a
+handful of symbols). Only samples under YGNodeCalculateLayout are counted
+unless --all. See docs/BENCH.md.
+"""
+
+import argparse
+import bisect
+import collections
+import gzip
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+BENCH = Path(__file__).resolve().parent
+OUT = BENCH / "build" / "prof"
+SAMPLY_ROOT = Path(os.environ.get("SAMPLY_ROOT", "/tmp/samply-install"))
+
+
+def tool(name):
+    p = shutil.which(name) or (SAMPLY_ROOT / "bin" / name)
+    if not Path(p).exists():
+        raise SystemExit(f"profile: {name} not found (cargo install --locked {name} --root {SAMPLY_ROOT})")
+    return str(p)
+
+
+def simplify(name):
+    name = re.sub(r" \(in [^)]*\)", "", name)
+    # drop generic args: foo::<T>::bar -> foo::bar, <T as U>::f kept as U::f
+    for _ in range(6):
+        name = re.sub(r"::<[^<>]*>", "", name)
+    name = re.sub(r"<([^<>]*) as ([^<>]*)>", r"\2", name)
+    name = re.sub(r"^<([^<>]*)>", r"\1", name)
+    name = re.sub(r"::h[0-9a-f]{16}$", "", name)
+    return name.strip()
+
+
+def symbolicate(binary, rvas):
+    """rva -> list of (function, file:line), innermost first."""
+    dsym = binary.parent / (binary.name + ".dSYM")
+    dwarf = dsym / "Contents" / "Resources" / "DWARF" / binary.name
+    rvas = sorted(rvas)
+    out = {}
+    rustfilt = tool("rustfilt")
+    for i in range(0, len(rvas), 400):
+        chunk = rvas[i:i + 400]
+        p = subprocess.run(["atos", "-i", "-o", str(dwarf), "-l", "0x100000000"]
+                           + [hex(0x100000000 + a) for a in chunk], capture_output=True, text=True, check=True)
+        dem = subprocess.run([rustfilt], input=p.stdout, capture_output=True, text=True, check=True).stdout
+        groups = [g for g in dem.split("\n\n")]
+        # atos prints one block per address, inline frames one per line.
+        groups = [g.strip("\n") for g in groups if g.strip()]
+        if len(groups) != len(chunk):
+            # fall back: one line per address
+            groups = [l for l in dem.splitlines() if l.strip()][:len(chunk)]
+        for a, g in zip(chunk, groups):
+            frames = []
+            for line in g.splitlines():
+                m = re.match(r"(.*?) \(in [^)]*\)(?: \((.*)\))?", line)
+                if m:
+                    frames.append((simplify(m.group(1)), m.group(2) or ""))
+                else:
+                    frames.append((simplify(line), ""))
+            out[a] = frames
+    return out
+
+
+def main():
+    argv = sys.argv[1:]
+    passthrough = []
+    if "--" in argv:
+        i = argv.index("--")
+        argv, passthrough = argv[:i], argv[i + 1:]
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("workload")
+    ap.add_argument("--engine", default="barre", choices=["barre", "yoga"])
+    ap.add_argument("--time-ms", type=float, default=4000)
+    ap.add_argument("--rate", type=int, default=4000, help="samples per second")
+    ap.add_argument("--top", type=int, default=30)
+    ap.add_argument("--all", action="store_true", help="count all samples, not only under YGNodeCalculateLayout")
+    ap.add_argument("--reuse", action="store_true", help="re-analyse the last recording")
+    args = ap.parse_args(argv)
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    bins = {}
+    if not args.reuse:
+        bins = json.loads(subprocess.run([str(BENCH / "run"), "--build-only"] + passthrough,
+                                         capture_output=True, text=True, check=True).stdout)
+    tag = f"{args.engine}-{args.workload.replace('/', '__')}"
+    prof = OUT / f"{tag}.json.gz"
+    # Keep the exact binary that was recorded (and its dSYM, made while the
+    # LTO objects its debug map points at still exist), so --reuse works
+    # after bench/run has rebuilt the engine.
+    keep = OUT / f"{tag}.bin"
+    if not args.reuse:
+        src = Path(bins[args.engine])
+        shutil.rmtree(keep, ignore_errors=True)
+        keep.mkdir(parents=True)
+        shutil.copy2(src, keep / src.name)
+        subprocess.run(["dsymutil", str(src), "-o", str(keep / (src.name + ".dSYM"))], check=True,
+                       stderr=subprocess.DEVNULL)
+    binary = next(p for p in keep.iterdir() if not p.name.endswith(".dSYM"))
+    if not args.reuse:
+        subprocess.run([tool("samply"), "record", "--save-only", "--unstable-presymbolicate",
+                        "--rate", str(args.rate), "-o", str(prof), "--",
+                        str(binary), "--run", args.workload, "--time-ms", str(args.time_ms), "--warmup-ms", "50", "--max-samples", "1000000000",
+                        "--captures", str(BENCH.parent / "vendor" / "yoga" / "benchmark" / "captures")],
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    p = json.load(gzip.open(prof))
+    syms = json.load(open(str(prof).replace(".json.gz", ".json.syms.json")))
+    st = syms["string_table"]
+    libsyms = {}
+    for d in syms["data"]:
+        tab = sorted((e["rva"], e["size"], st[e["symbol"]]) for e in d["symbol_table"])
+        libsyms[d["debug_name"]] = tab
+
+    thread = max(p["threads"], key=lambda t: t["samples"]["length"])
+    ft, fu, rt, stk = thread["frameTable"], thread["funcTable"], thread["resourceTable"], thread["stackTable"]
+    libs = p["libs"]
+
+    def frame_lib(fi):
+        res = fu["resource"][ft["func"][fi]]
+        return None if res is None or res < 0 else libs[rt["lib"][res]]["name"]
+
+    # Collect raw stacks: list of (lib, rva, is_leaf)
+    samples = thread["samples"]
+    weights = samples.get("weight") or [1] * samples["length"]
+    stacks = []
+    need = set()
+    for si, w in zip(samples["stack"], weights):
+        frames = []
+        leaf = True
+        while si is not None:
+            fi = stk["frame"][si]
+            lib = frame_lib(fi)
+            rva = ft["address"][fi]
+            if lib == binary.name and rva is not None and rva >= 0:
+                rva = rva if leaf else rva - 1
+                need.add(rva)
+            frames.append((lib, rva))
+            leaf = False
+            si = stk["prefix"][si]
+        stacks.append((frames, w or 1))
+    resolved = symbolicate(binary, need)
+
+    def lookup(lib, rva):
+        if lib == binary.name and rva in resolved:
+            return resolved[rva]
+        tab = libsyms.get(lib)
+        if tab and rva is not None:
+            i = bisect.bisect_right(tab, (rva, float("inf"), "")) - 1
+            if i >= 0 and tab[i][0] <= rva < tab[i][0] + tab[i][1]:
+                return [(simplify(tab[i][2]), "")]
+        return [(f"{lib or '?'}+{rva:#x}" if rva is not None else "?", "")]
+
+    self_fn = collections.Counter()
+    self_line = collections.Counter()
+    incl = collections.Counter()
+    total = in_layout = 0
+    for frames, w in stacks:
+        expanded = []  # innermost first
+        for lib, rva in frames:
+            expanded.extend(lookup(lib, rva))
+        total += w
+        names = [f for f, _ in expanded]
+        # With LTO, Yoga's YGNodeCalculateLayout is inlined into the caller;
+        # its calculateLayout survives as a frame (barre: both do).
+        if not args.all and not any(n.startswith("YGNodeCalculateLayout") or "yoga::calculateLayout" in n
+                                    for n in names):
+            continue
+        in_layout += w
+        self_fn[names[0]] += w
+        self_line[f"{names[0]}  @ {expanded[0][1] or '?'}"] += w
+        for n in set(names):
+            incl[n] += w
+
+    lines = [f"## {args.engine}: `{args.workload}` ({in_layout} of {total} samples under YGNodeCalculateLayout"
+             f" at {args.rate} Hz)", ""]
+
+    def tab(title, counter, n):
+        lines.extend([f"**{title}**", "", "| % | samples | frame |", "|---|---|---|"])
+        for name, c in counter.most_common(n):
+            lines.append(f"| {100 * c / max(in_layout, 1):.1f} | {c} | `{name[:160]}` |")
+        lines.append("")
+
+    tab("Self time by function (inlined frames resolved)", self_fn, args.top)
+    tab("Inclusive time by function", incl, args.top)
+    tab("Self time by source line", self_line, args.top)
+    md = "\n".join(lines)
+    print(md)
+    (OUT / f"{tag}.md").write_text(md + "\n")
+
+
+if __name__ == "__main__":
+    main()

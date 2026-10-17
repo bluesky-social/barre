@@ -1,0 +1,410 @@
+#!/usr/bin/env python3
+"""barre vs Yoga benchmark runner. See docs/BENCH.md.
+
+Builds bench/src once (thin-LTO bitcode), links it against real Yoga
+(vendor/yoga, compiled the way RN's Android build compiles it) and against
+barre-ffi (cargo --release, fat LTO, codegen-units=1, from a clean `git
+archive` of a commit so a concurrently edited working tree can't leak in),
+runs every workload on both engines interleaved, and prints a markdown table.
+"""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+import platform
+import re
+import shutil
+import statistics
+import subprocess
+import sys
+import tarfile
+import io
+from pathlib import Path
+
+BENCH = Path(__file__).resolve().parent
+ROOT = BENCH.parent
+VENDOR = ROOT / "vendor" / "yoga"
+BUILD = BENCH / "build"
+RESULTS = BENCH / "results"
+
+CXX = os.environ.get("CXX") or shutil.which("clang++") or "c++"
+# RN's Yoga: ReactCommon/yoga/CMakeLists.txt forces CMAKE_BUILD_TYPE=Release
+# (-O3 -DNDEBUG, then project-defaults.cmake appends -O2, which wins), IPO on
+# (CMake's Clang IPO flag is -flto=thin), -fno-omit-frame-pointer, exceptions,
+# RTTI, function/data sections, dead-strip at link.
+YOGA_CFLAGS = ["-O2", "-DNDEBUG", "-flto=thin", "-fno-omit-frame-pointer",
+               "-fexceptions", "-frtti", "-ffunction-sections", "-fdata-sections", "-fPIC"]
+YOGA_PIN = "52f6d0bd"  # docs/YOGA-ISSUES.md
+CARGO_ENV = {
+    "CARGO_PROFILE_RELEASE_LTO": "fat",
+    "CARGO_PROFILE_RELEASE_CODEGEN_UNITS": "1",
+}
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def sh(cmd, **kw):
+    return subprocess.run(cmd, check=True, text=True, **kw)
+
+
+# --------------------------------------------------------------------------
+# Build
+
+
+def git_sha(rev):
+    return sh(["git", "-C", str(ROOT), "rev-parse", rev], capture_output=True).stdout.strip()
+
+
+def barre_source(args):
+    """Returns (cargo workspace dir, label)."""
+    if args.worktree:
+        dirty = sh(["git", "-C", str(ROOT), "status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock"],
+                   capture_output=True).stdout.strip()
+        return ROOT, git_sha("HEAD")[:12] + ("+dirty" if dirty else "")
+    sha = git_sha(args.rev)
+    dest = BUILD / "src" / sha[:12]
+    if not (dest / "Cargo.toml").exists():
+        log(f"bench: exporting barre @ {sha[:12]} to {dest.relative_to(ROOT)}")
+        tmp = dest.with_suffix(".tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir(parents=True)
+        data = subprocess.run(["git", "-C", str(ROOT), "archive", "--format=tar", sha,
+                               "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "crates"],
+                              check=True, capture_output=True).stdout
+        with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+            tf.extractall(tmp, filter="data")
+        tmp.rename(dest)
+    return dest, sha[:12]
+
+
+def build_barre(args):
+    src, label = barre_source(args)
+    env = dict(os.environ)
+    env.update(CARGO_ENV)
+    env["CARGO_TARGET_DIR"] = str(BUILD / "target")
+    for kv in args.cargo_env:
+        k, _, v = kv.partition("=")
+        env[k] = v
+    log(f"bench: cargo build --release -p barre-ffi ({label}, "
+        + ", ".join(f"{k}={env[k]}" for k in sorted(env) if k.startswith("CARGO_PROFILE")) + ")")
+    p = subprocess.run(["cargo", "build", "--release", "-p", "barre-ffi", "--message-format=json-render-diagnostics",
+                        "--manifest-path", str(src / "Cargo.toml")],
+                       env=env, text=True, stdout=subprocess.PIPE)
+    if p.returncode != 0:
+        raise SystemExit("bench: cargo build failed")
+    lib = None
+    for line in p.stdout.splitlines():
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("reason") == "compiler-artifact" and "staticlib" in msg.get("target", {}).get("kind", []):
+            lib = next(f for f in msg["filenames"] if f.endswith(".a"))
+    if lib is None:
+        raise SystemExit("bench: no barre-ffi staticlib in cargo output")
+    return Path(lib), label
+
+
+def write_ninja(args):
+    flags = args.yoga_cflags.split() if args.yoga_cflags else YOGA_CFLAGS
+    if args.no_lto:
+        flags = [f for f in flags if not f.startswith("-flto")]
+    common = ["-std=c++20", "-gline-tables-only"] + flags
+    obj = BUILD / "obj"
+    yoga_srcs = sorted((VENDOR / "yoga").rglob("*.cpp"))
+    bench_srcs = [BENCH / "src" / "bench.cpp", BENCH / "src" / "capture.cpp",
+                  VENDOR / "benchmark" / "TreeDeserialization.cpp"]
+    inc_yoga = [f"-I{VENDOR}"]
+    inc_bench = [f"-I{VENDOR}", f"-I{VENDOR / 'lib'}", f"-I{BENCH / 'src'}"]
+    tag = hashlib.sha1(" ".join(common).encode()).hexdigest()[:8]
+
+    def o(src, kind):
+        rel = src.relative_to(ROOT)
+        return obj / tag / kind / (str(rel).replace("/", "__") + ".o")
+
+    L = ["ninja_required_version = 1.5", f"builddir = {BUILD}",
+         f"rule cxx\n  command = {CXX} -MMD -MF $out.d $flags -c $in -o $out\n  depfile = $out.d\n  deps = gcc\n  description = CXX $in",
+         f"rule link\n  command = rm -rf $out.lto && mkdir -p $out.lto && {CXX} $flags -Wl,-object_path_lto,$out.lto $in $libs -o $out\n  description = LINK $out"]
+    yoga_objs = []
+    for s in yoga_srcs:
+        out = o(s, "yoga")
+        yoga_objs.append(out)
+        L.append(f"build {out}: cxx {s}\n  flags = {' '.join(common + inc_yoga + ['-Wall', '-Werror'])}")
+    bench_objs = []
+    for s in bench_srcs:
+        out = o(s, "bench")
+        bench_objs.append(out)
+        L.append(f"build {out}: cxx {s}\n  flags = {' '.join(common + inc_bench)}")
+    # -gline-tables-only doesn't change codegen; keeping the LTO object lets
+    # dsymutil/atos resolve inlined frames in bench/profile.
+    link_flags = " ".join([f for f in flags if f.startswith(("-O", "-flto"))]
+                          + ["-Wl,-dead_strip"])
+    bins = {"yoga": BUILD / "bin" / f"bench-yoga-{tag}", "barre": BUILD / "bin" / f"bench-barre-{tag}"}
+    L.append(f"build {bins['yoga']}: link {' '.join(map(str, bench_objs + yoga_objs))}\n  flags = {link_flags}\n  libs =")
+    L.append(f"build {bins['barre']}: link {' '.join(map(str, bench_objs))} | $barre_lib\n  flags = {link_flags}\n  libs = $barre_lib -liconv")
+    return L, bins, common
+
+
+def build(args):
+    BUILD.mkdir(parents=True, exist_ok=True)
+    lib, label = build_barre(args)
+    L, bins, flags = write_ninja(args)
+    L.insert(2, f"barre_lib = {lib}")
+    ninja_file = BUILD / "build.ninja"
+    ninja_file.write_text("\n".join(L) + "\n")
+    log("bench: ninja (yoga + bench objects, links)")
+    sh(["ninja", "-f", str(ninja_file), str(bins["yoga"]), str(bins["barre"])],
+       stdout=subprocess.DEVNULL if not args.verbose else None)
+    # Sanity: each binary contains exactly one engine.
+    def syms(p):
+        return sh(["nm", "-gU", str(p)], capture_output=True).stdout
+    by = syms(bins["yoga"])
+    bb = sh(["nm", str(bins["barre"])], capture_output=True).stdout
+    if "rust" in by.lower():
+        raise SystemExit("bench: yoga binary contains Rust code?")
+    if "barre" not in bb:
+        raise SystemExit("bench: barre binary has no barre symbols (not linked against barre-ffi?)")
+    if "facebook4yoga4Node" in bb or "facebook4yoga15calculateLayout" in bb:
+        raise SystemExit("bench: barre binary contains Yoga C++ symbols")
+    return bins, label, flags, lib
+
+
+# --------------------------------------------------------------------------
+# Run
+
+
+def run_one(binary, name, args, dump=None):
+    cmd = [str(binary), "--run", name, "--time-ms", str(args.time_ms), "--warmup-ms", str(args.warmup_ms),
+           "--captures", str(VENDOR / "benchmark" / "captures")]
+    if dump:
+        cmd += ["--dump", str(dump)]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+    except subprocess.TimeoutExpired:
+        return {"error": f"timeout after {args.timeout}s"}
+    if p.returncode != 0:
+        tail = (p.stderr or p.stdout).strip().splitlines()[-3:]
+        return {"error": f"exit {p.returncode}: " + " | ".join(tail)[:300]}
+    try:
+        return json.loads(p.stdout.strip().splitlines()[-1])
+    except (json.JSONDecodeError, IndexError):
+        return {"error": "unparseable output: " + p.stdout[-200:]}
+
+
+def pct(xs, q):
+    xs = sorted(xs)
+    if not xs:
+        return float("nan")
+    k = (len(xs) - 1) * q
+    f = int(k)
+    c = min(f + 1, len(xs) - 1)
+    return xs[f] + (xs[c] - xs[f]) * (k - f)
+
+
+def dump_path(engine, name):
+    return BUILD / "dumps" / engine / (name.replace("/", "__") + ".txt")
+
+
+def compare_dumps(name):
+    a, b = dump_path("yoga", name), dump_path("barre", name)
+    if not (a.exists() and b.exists()):
+        return "no dump"
+    la, lb = a.read_text().splitlines(), b.read_text().splitlines()
+    if len(la) != len(lb):
+        return f"node count {len(la)} vs {len(lb)}"
+    nd, mx, first = 0, 0.0, None
+    for x, y in zip(la, lb):
+        if x == y:
+            continue
+        px, py = x.split(), y.split()
+        d = max(abs(float(u) - float(v)) if not (u == v) else 0.0 for u, v in zip(px[1:], py[1:]))
+        if d != d:  # nan vs number
+            d = float("inf")
+        nd += 1
+        if d > mx:
+            mx, first = d, px[0] or "/"
+    return f"{nd} nodes differ, max Δ {mx:g} at {first}"
+
+
+def fmt_ns(ns):
+    if ns != ns:
+        return "-"
+    if ns < 1e3:
+        return f"{ns:.0f} ns"
+    if ns < 1e6:
+        return f"{ns / 1e3:.3g} µs"
+    return f"{ns / 1e6:.3g} ms"
+
+
+def summarize(engine_runs):
+    """engine_runs: list of per-round result dicts for one engine/workload."""
+    ok = [r for r in engine_runs if "error" not in r]
+    if not ok:
+        return {"error": engine_runs[0]["error"] if engine_runs else "not run"}
+    samples = [s for r in ok for s in r["samples_ns"]]
+    first = ok[0]
+    round_medians = [statistics.median(r["samples_ns"]) for r in ok]
+    return {
+        "median": statistics.median(samples), "p10": pct(samples, 0.1), "p90": pct(samples, 0.9),
+        "round_medians": round_medians, "samples": len(samples),
+        "layouts": sum(r["iters"] for r in ok), "batch": first["batch"],
+        "checksum": first["checksum"], "nodes": first["nodes"],
+        "measure_check": first["measure_check"], "new_layout_check": first["new_layout_check"],
+        "measure_timed_per_iter": statistics.mean(r["measure_timed_per_iter"] for r in ok),
+        "capture_misses": first["capture_misses"], "rn": first["rn"],
+        "errors": [r["error"] for r in engine_runs if "error" in r],
+    }
+
+
+def per_layout(xs):
+    # Callback counts per layout in the deterministic check phase. Relayout
+    # scenarios alternate between two states, so show both if they differ.
+    if not xs:
+        return "-"
+    uniq = sorted(set(xs[1:] or xs))
+    return "/".join(str(u) for u in uniq)
+
+
+def check_cell(name, y, b):
+    if "error" in y or "error" in b:
+        return "ERROR"
+    notes = []
+    if y["checksum"] is None:
+        notes.append("n/a")
+    elif y["checksum"] != b["checksum"]:
+        notes.append("**MISMATCH**: " + compare_dumps(name))
+    else:
+        notes.append("ok")
+    if y["measure_check"] != b["measure_check"]:
+        notes.append(f"measure calls differ {y['measure_check']} vs {b['measure_check']}")
+    if y["new_layout_check"] != b["new_layout_check"]:
+        notes.append(f"hasNewLayout set differs {y['new_layout_check']} vs {b['new_layout_check']}")
+    if y["capture_misses"] or b["capture_misses"]:
+        notes.append(f"capture measure misses y={y['capture_misses']} b={b['capture_misses']}")
+    return "; ".join(notes)
+
+
+def table(results):
+    rows = ["| workload | yoga median (p10–p90) | barre median (p10–p90) | barre/yoga | measure calls/layout (y, b) | new-layout nodes (y, b) | check |",
+            "|---|---|---|---|---|---|---|"]
+    for name, r in results.items():
+        y, b = r["yoga"], r["barre"]
+        def cell(s):
+            if "error" in s:
+                return "ERROR: " + s["error"]
+            return f"{fmt_ns(s['median'])} ({fmt_ns(s['p10'])}–{fmt_ns(s['p90'])})"
+        ratio = "-"
+        if "error" not in y and "error" not in b:
+            ratio = f"**{b['median'] / y['median']:.2f}×**"
+        mc = nl = "-"
+        if "error" not in y and "error" not in b:
+            my, mb = per_layout(y["measure_check"]), per_layout(b["measure_check"])
+            mc = my if my == mb else f"{my}, {mb}"
+            if y["rn"]:
+                ny, nb = per_layout(y["new_layout_check"]), per_layout(b["new_layout_check"])
+                nl = ny if ny == nb else f"{ny}, {nb}"
+        rows.append(f"| `{name}` | {cell(y)} | {cell(b)} | {ratio} | {mc} | {nl} | {check_cell(name, y, b)} |")
+    return "\n".join(rows)
+
+
+def geomean(xs):
+    import math
+    xs = [x for x in xs if x > 0]
+    return math.exp(sum(math.log(x) for x in xs) / len(xs)) if xs else float("nan")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("filter", nargs="*", help="workload name prefixes (default: all)")
+    ap.add_argument("--quick", action="store_true", help="2 rounds × 60 ms per workload")
+    ap.add_argument("--rounds", type=int, default=None, help="interleaved rounds (default 5, quick 2)")
+    ap.add_argument("--time-ms", type=float, default=None, help="timed budget per workload per round (default 300)")
+    ap.add_argument("--warmup-ms", type=float, default=None, help="warmup per run (default 100, quick 20)")
+    ap.add_argument("--timeout", type=float, default=300)
+    ap.add_argument("--rev", default="HEAD", help="barre commit to benchmark (default HEAD, via git archive)")
+    ap.add_argument("--worktree", action="store_true", help="build barre from the live working tree instead")
+    ap.add_argument("--cargo-env", action="append", default=[], metavar="K=V",
+                    help="extra env for the barre cargo build, e.g. CARGO_PROFILE_RELEASE_LTO=thin")
+    ap.add_argument("--yoga-cflags", default=None, help="override Yoga/bench compile flags (default: RN's)")
+    ap.add_argument("--no-lto", action="store_true", help="drop -flto from the C++ side")
+    ap.add_argument("--build-only", action="store_true")
+    ap.add_argument("--list", action="store_true")
+    ap.add_argument("--engines", default="yoga,barre")
+    ap.add_argument("--no-latest", action="store_true", help="don't overwrite bench/results/latest.md")
+    ap.add_argument("-v", "--verbose", action="store_true")
+    args = ap.parse_args()
+    args.rounds = args.rounds or (2 if args.quick else 5)
+    args.time_ms = args.time_ms or (60 if args.quick else 300)
+    args.warmup_ms = args.warmup_ms or (20 if args.quick else 100)
+
+    bins, label, cflags, lib = build(args)
+    if args.build_only:
+        print(json.dumps({k: str(v) for k, v in bins.items()} | {"barre_lib": str(lib)}))
+        return
+    names = sh([str(bins["yoga"]), "--list"], capture_output=True).stdout.split()
+    if args.filter:
+        names = [n for n in names if any(n.startswith(f) for f in args.filter)]
+    if args.list:
+        print("\n".join(names))
+        return
+    engines = args.engines.split(",")
+    shutil.rmtree(BUILD / "dumps", ignore_errors=True)
+    for e in engines:
+        (BUILD / "dumps" / e).mkdir(parents=True, exist_ok=True)
+
+    raw = {n: {e: [] for e in engines} for n in names}
+    t0 = datetime.datetime.now()
+    for rnd in range(args.rounds):
+        for i, n in enumerate(names):
+            order = engines if (rnd + i) % 2 == 0 else list(reversed(engines))
+            for e in order:
+                res = run_one(bins[e], n, args, dump=dump_path(e, n) if rnd == 0 else None)
+                raw[n][e].append(res)
+                if "error" in res and rnd == 0:
+                    log(f"bench: {e} {n}: {res['error']}")
+        log(f"bench: round {rnd + 1}/{args.rounds} done ({(datetime.datetime.now() - t0).seconds}s)")
+
+    results = {n: {e: summarize(raw[n][e]) for e in engines} for n in names}
+    if engines != ["yoga", "barre"]:
+        print(json.dumps(results, indent=1))
+        return
+
+    load = os.getloadavg()
+    cpu = sh(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True).stdout.strip() \
+        if platform.system() == "Darwin" else platform.processor()
+    rustc = sh(["rustc", "--version"], capture_output=True).stdout.strip()
+    cxxv = sh([CXX, "--version"], capture_output=True).stdout.splitlines()[0]
+    ratios = [r["barre"]["median"] / r["yoga"]["median"] for r in results.values()
+              if "error" not in r["yoga"] and "error" not in r["barre"]]
+    header = [
+        f"# barre vs Yoga — {t0:%Y-%m-%d %H:%M}",
+        "",
+        f"- barre: `{label}` (cargo --release, {', '.join(f'{k}={v}' for k, v in CARGO_ENV.items())}"
+        + (f", {', '.join(args.cargo_env)}" if args.cargo_env else "") + f"), {rustc}",
+        f"- yoga: `vendor/yoga` (pin {YOGA_PIN}), `{' '.join(cflags)}`, {cxxv}",
+        f"- {cpu}, {platform.mac_ver()[0] or platform.release()}, load avg at end {load[0]:.1f}/{load[1]:.1f}/{load[2]:.1f}",
+        f"- {args.rounds} interleaved rounds × {args.time_ms:g} ms per workload per engine (+{args.warmup_ms:g} ms warmup);"
+        " times are ns per YGNodeCalculateLayout (or per op for `micro/`, per build+layout+free for `yoga/*` blocks)",
+        f"- geometric mean barre/yoga over {len(ratios)} workloads: **{geomean(ratios):.2f}×**",
+        "",
+    ]
+    md = "\n".join(header) + "\n" + table(results) + "\n"
+    print(md)
+
+    RESULTS.mkdir(exist_ok=True)
+    stamp = f"{t0:%Y%m%d-%H%M%S}-{label.replace('+', '_')}"
+    out = {"label": label, "time": t0.isoformat(), "args": vars(args), "cflags": cflags,
+           "cargo_env": CARGO_ENV, "cpu": cpu, "load": load, "results": results}
+    (RESULTS / f"{stamp}.json").write_text(json.dumps(out, indent=1, default=str))
+    (RESULTS / f"{stamp}.md").write_text(md)
+    if not (args.quick or args.filter or args.no_latest):
+        (RESULTS / "latest.md").write_text(md)
+    log(f"bench: wrote bench/results/{stamp}.json")
+
+
+if __name__ == "__main__":
+    main()
