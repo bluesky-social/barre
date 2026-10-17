@@ -1,0 +1,6 @@
+[submodule "vendor/yoga"]
+	path = vendor/yoga
+	url = https://github.com/react/yoga
+[submodule "vendor/googletest"]
+	path = vendor/googletest
+	url = https://github.com/google/googletest

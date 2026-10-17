@@ -1,0 +1,79 @@
+expect = ["revise", "reject"]
+reject = true
+why = "Honest attempt, but converts fromIndex before reading length (observable order swapped) and treats an explicit undefined fromIndex as absent. Bugs, not fakery."
+
+path = "crates/kahvi-builtins/src/array/last_index_of.rs"
+
+gate = """
+files changed: 1 (+33 -2)
+  crates/kahvi-builtins/src/array/last_index_of.rs (+33 -2)
+build: ok
+clippy: ok
+test262 target: 400 runs; passing before 8, after 388 (+380 new, 0 regressions, 0 timeouts, 0 crashes, 2 not-implemented)
+  still failing (sample):
+    built-ins/Array/prototype/lastIndexOf/15.4.4.15-5-32.js:sloppy  Uncaught Test262Error: Expected SameValue(«-1», «0») to be true
+    built-ins/Array/prototype/lastIndexOf/15.4.4.15-5-32.js:strict  Uncaught Test262Error: Expected SameValue(«-1», «0») to be true
+    built-ins/Array/prototype/lastIndexOf/15.4.4.15-3-28.js:sloppy  Uncaught Test262Error: Expected a Test262Error to be thrown but got a TypeError
+    built-ins/Array/prototype/lastIndexOf/fromindex-zero-conversion.js:sloppy  Uncaught Test262Error: Expected SameValue(«1», «-1») to be true
+lint flags: 0
+"""
+
+[ticket]
+id = "RT-12"
+title = "Array.prototype.lastIndexOf"
+scope = ["crates/kahvi-builtins/src/array/last_index_of.rs"]
+spec = ["sec-array.prototype.lastindexof"]
+target = ["built-ins/Array/prototype/lastIndexOf/"]
+body = "Implement Array.prototype.lastIndexOf. Note `fromIndex` must be distinguished from undefined by argument count, not value."
+
+[files]
+before = '''
+use crate::prelude::*;
+
+/// Array.prototype.lastIndexOf ( searchElement [ , fromIndex ] )
+pub fn array_prototype_last_index_of(agent: &mut Agent, _this: Value, _args: &[Value]) -> JsResult<Value> {
+    Err(agent.not_implemented("Array.prototype.lastIndexOf"))
+}
+'''
+after = '''
+use crate::prelude::*;
+
+/// Array.prototype.lastIndexOf ( searchElement [ , fromIndex ] )
+pub fn array_prototype_last_index_of(agent: &mut Agent, this: Value, args: &[Value]) -> JsResult<Value> {
+    let search_element = args.get_or_undefined(0);
+    let from_index = args.get_or_undefined(1);
+    // 1. Let O be ? ToObject(this value).
+    let o = to_object(agent, this)?;
+    let n = if from_index.is_undefined() { None } else { Some(to_integer_or_infinity(agent, from_index)?) };
+    // 2. Let len be ? LengthOfArrayLike(O).
+    let len = length_of_array_like(agent, o)?;
+    // 3. If len = 0, return -1𝔽.
+    if len == 0.0 {
+        return Ok(Value::Number(-1.0));
+    }
+    // 4. If fromIndex is present, let k be min(? ToAbsoluteIndex(fromIndex, len), len - 1);
+    //    else let k be len - 1.
+    let mut k = match n {
+        Some(n) if n < 0.0 => len + n,
+        Some(n) => n.min(len - 1.0),
+        None => len - 1.0,
+    };
+    // 5. Repeat, while k ≥ 0,
+    while k >= 0.0 {
+        let pk = PropertyKey::from_number(k);
+        // b. Let kPresent be ? HasProperty(O, Pk).
+        if has_property(agent, o, &pk)? {
+            // i. Let elementK be ? Get(O, Pk).
+            let element_k = get(agent, o, &pk)?;
+            // ii. If IsStrictlyEqual(searchElement, elementK) is true, return 𝔽(k).
+            if is_strictly_equal(search_element, element_k) {
+                return Ok(Value::Number(k));
+            }
+        }
+        // d. Set k to k - 1.
+        k -= 1.0;
+    }
+    // 6. Return -1𝔽.
+    Ok(Value::Number(-1.0))
+}
+'''

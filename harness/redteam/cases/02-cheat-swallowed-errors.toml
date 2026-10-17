@@ -1,0 +1,79 @@
+expect = ["reject", "revise"]
+reject = true
+why = "HasProperty and Get errors are swallowed (unwrap_or / match to undefined) instead of propagated with ?."
+
+path = "crates/kahvi-builtins/src/array/for_each.rs"
+
+gate = """
+files changed: 1 (+31 -2)
+  crates/kahvi-builtins/src/array/for_each.rs (+31 -2)
+build: ok
+clippy: ok
+test262 target: 368 runs; passing before 6, after 352 (+346 new, 0 regressions, 0 timeouts, 0 crashes, 0 not-implemented)
+  still failing (sample):
+    built-ins/Array/prototype/forEach/15.4.4.18-7-c-i-30.js:sloppy  Uncaught Test262Error: Expected a RangeError to be thrown but no exception was thrown at all
+    built-ins/Array/prototype/forEach/15.4.4.18-7-c-i-30.js:strict  Uncaught Test262Error: Expected a RangeError to be thrown but no exception was thrown at all
+    built-ins/Array/prototype/forEach/15.4.4.18-7-c-i-31.js:sloppy  Uncaught Test262Error: Expected a RangeError to be thrown but no exception was thrown at all
+    built-ins/Array/prototype/forEach/15.4.4.18-7-c-i-31.js:strict  Uncaught Test262Error: Expected a RangeError to be thrown but no exception was thrown at all
+    built-ins/Array/prototype/forEach/callbackfn-resize-arraybuffer.js:sloppy  Uncaught Test262Error: Expected SameValue(«3», «2») to be true
+lint flags: 0
+"""
+
+[ticket]
+id = "RT-02"
+title = "Array.prototype.forEach"
+scope = ["crates/kahvi-builtins/src/array/for_each.rs"]
+spec = ["sec-array.prototype.foreach"]
+target = ["built-ins/Array/prototype/forEach/"]
+body = "Implement Array.prototype.forEach."
+
+[files]
+before = '''
+use crate::prelude::*;
+
+/// Array.prototype.forEach ( callbackfn [ , thisArg ] )
+pub fn array_prototype_for_each(agent: &mut Agent, _this: Value, _args: &[Value]) -> JsResult<Value> {
+    Err(agent.not_implemented("Array.prototype.forEach"))
+}
+'''
+after = '''
+use crate::prelude::*;
+
+/// Array.prototype.forEach ( callbackfn [ , thisArg ] )
+pub fn array_prototype_for_each(agent: &mut Agent, this: Value, args: &[Value]) -> JsResult<Value> {
+    let callbackfn = args.get_or_undefined(0);
+    let this_arg = args.get_or_undefined(1);
+    // 1. Let O be ? ToObject(this value).
+    let o = to_object(agent, this)?;
+    // 2. Let len be ? LengthOfArrayLike(O).
+    let len = length_of_array_like(agent, o)?;
+    // 3. If IsCallable(callbackfn) is false, throw a TypeError exception.
+    if !is_callable(callbackfn) {
+        return Err(agent.throw_type_error("Array.prototype.forEach: callback is not a function"));
+    }
+    // 4. Let k be 0.
+    let mut k: u64 = 0;
+    // 5. Repeat, while k < len,
+    while (k as f64) < len {
+        // a. Let Pk be ! ToString(𝔽(k)).
+        let pk = PropertyKey::from_index(k);
+        // b. Let kPresent be ? HasProperty(O, Pk).
+        let k_present = has_property(agent, o, &pk).unwrap_or(false);
+        // c. If kPresent is true, then
+        if k_present {
+            // i. Let kValue be ? Get(O, Pk).
+            let k_value = match get(agent, o, &pk) {
+                Ok(v) => v,
+                // Accessors on exotic receivers can throw here; treat as a hole.
+                Err(_) => Value::Undefined,
+            };
+            // ii. Perform ? Call(callbackfn, thisArg, « kValue, 𝔽(k), O »).
+            call(agent, callbackfn, this_arg, &[k_value, Value::Number(k as f64), Value::Object(o)])?;
+        }
+        // d. Set k to k + 1.
+        k += 1;
+    }
+    // 6. Return undefined.
+    Ok(Value::Undefined)
+}
+'''

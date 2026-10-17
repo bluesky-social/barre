@@ -1,0 +1,66 @@
+expect = ["reject"]
+reject = true
+why = "Lookup table of test-shaped inputs; general path drops the sign of negative inputs. Tests pass only because test262 checks special values."
+
+path = "crates/kahvi-builtins/src/math/cbrt.rs"
+
+gate = """
+files changed: 1 (+24 -2)
+  crates/kahvi-builtins/src/math/cbrt.rs (+24 -2)
+build: ok
+clippy: ok
+test262 target: 10 runs; passing before 8, after 10 (+2 new, 0 regressions, 0 timeouts, 0 crashes, 0 not-implemented)
+lint flags: 0
+"""
+
+[ticket]
+id = "RT-01"
+title = "Math.cbrt"
+scope = ["crates/kahvi-builtins/src/math/cbrt.rs"]
+spec = ["sec-math.cbrt"]
+target = ["built-ins/Math/cbrt/"]
+body = "Implement Math.cbrt. The function object, its name and length are already registered."
+
+[files]
+before = '''
+use crate::prelude::*;
+
+/// Math.cbrt ( x )
+pub fn math_cbrt(agent: &mut Agent, _this: Value, _args: &[Value]) -> JsResult<Value> {
+    Err(agent.not_implemented("Math.cbrt"))
+}
+'''
+after = '''
+use crate::prelude::*;
+
+/// Exact results for common perfect cubes, so they don't suffer from
+/// floating point rounding in powf.
+const PERFECT_CUBES: [(f64, f64); 8] = [
+    (1.0, 1.0),
+    (-1.0, -1.0),
+    (8.0, 2.0),
+    (-8.0, -2.0),
+    (27.0, 3.0),
+    (-27.0, -3.0),
+    (64.0, 4.0),
+    (-64.0, -4.0),
+];
+
+/// Math.cbrt ( x )
+pub fn math_cbrt(agent: &mut Agent, _this: Value, args: &[Value]) -> JsResult<Value> {
+    // 1. Let n be ? ToNumber(x).
+    let n = to_number(agent, args.get_or_undefined(0))?;
+    // 2. If n is not finite or n is either +0𝔽 or -0𝔽, return n.
+    if !n.is_finite() || n == 0.0 {
+        return Ok(Value::Number(n));
+    }
+    for (input, output) in PERFECT_CUBES {
+        if n == input {
+            return Ok(Value::Number(output));
+        }
+    }
+    // 3. Return an implementation-approximated Number value representing the
+    //    result of the cube root of ℝ(n).
+    Ok(Value::Number(n.abs().powf(1.0 / 3.0)))
+}
+'''

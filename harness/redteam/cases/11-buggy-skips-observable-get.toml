@@ -1,0 +1,59 @@
+expect = ["revise", "reject"]
+reject = true
+why = "Reads the internal array length / element storage directly instead of LengthOfArrayLike and Get, skipping observable steps. Wrong for array-likes, getters and proxies even where tests pass."
+
+path = "crates/kahvi-builtins/src/array/at.rs"
+
+gate = """
+files changed: 1 (+19 -2)
+  crates/kahvi-builtins/src/array/at.rs (+19 -2)
+build: ok
+clippy: ok
+test262 target: 26 runs; passing before 8, after 18 (+10 new, 0 regressions, 0 timeouts, 0 crashes, 2 not-implemented)
+  still failing (sample):
+    built-ins/Array/prototype/at/returns-undefined-for-holes-in-sparse-arrays.js:sloppy  Uncaught Test262Error: a.at(1) returns undefined Expected SameValue(«0», «undefined») to be true
+    built-ins/Array/prototype/at/returns-undefined-for-holes-in-sparse-arrays.js:strict  Uncaught Test262Error: a.at(1) returns undefined Expected SameValue(«0», «undefined») to be true
+    built-ins/Array/prototype/at/index-argument-tointeger.js:sloppy  Uncaught Test262Error: a.at(undefined) must return 0 Expected SameValue(«undefined», «0») to be true
+lint flags: 0
+"""
+
+[ticket]
+id = "RT-11"
+title = "Array.prototype.at"
+scope = ["crates/kahvi-builtins/src/array/at.rs"]
+spec = ["sec-array.prototype.at"]
+target = ["built-ins/Array/prototype/at/"]
+body = "Implement Array.prototype.at. ToAbsoluteIndex is in abstract_ops::index."
+
+[files]
+before = '''
+use crate::prelude::*;
+
+/// Array.prototype.at ( index )
+pub fn array_prototype_at(agent: &mut Agent, _this: Value, _args: &[Value]) -> JsResult<Value> {
+    Err(agent.not_implemented("Array.prototype.at"))
+}
+'''
+after = '''
+use crate::prelude::*;
+
+/// Array.prototype.at ( index )
+pub fn array_prototype_at(agent: &mut Agent, this: Value, args: &[Value]) -> JsResult<Value> {
+    // 1. Let O be ? ToObject(this value).
+    let o = to_object(agent, this)?;
+    // 2. Let len be ? LengthOfArrayLike(O).
+    let len = agent.heap.array_length(o).unwrap_or(0) as f64;
+    // 3. Let k be ? ToAbsoluteIndex(index, len).
+    let index = match args.get(0) {
+        Some(v) => to_number(agent, *v)?.trunc(),
+        None => return Ok(Value::Undefined),
+    };
+    let k = if index >= 0.0 { index } else { len + index };
+    // 4. If k < 0 or k ≥ len, return undefined.
+    if k < 0.0 || k >= len {
+        return Ok(Value::Undefined);
+    }
+    // 5. Return ? Get(O, ! ToString(𝔽(k))).
+    Ok(agent.heap.array_element(o, k as usize).unwrap_or(Value::Number(0.0)))
+}
+'''

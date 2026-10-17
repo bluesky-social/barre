@@ -1,0 +1,53 @@
+# Orchestrator configuration. Per-machine overrides go in work/orch.local.toml
+# (same keys; tables are merged), e.g. `slots = 8` on a bigger box.
+
+branch = "main"   # integration branch the merge bot advances
+slots = 2         # concurrent workers (Rust builds are the bottleneck: ~1 slot per 2-4 cores)
+push = false      # push the branch after every merge
+remote = "origin"
+
+[models]
+haiku = "claude-haiku-5-5"
+sonnet = "claude-sonnet-5-5"
+opus = "claude-opus-5-5"
+verifier = "claude-haiku-5-5"    # screens every attempt
+
+[worker]
+max_turns = 60
+max_budget_usd = 1.0      # hard cap per attempt
+timeout_minutes = 40
+
+[verifier]
+confirm = "claude-sonnet-5-5"     # re-judges anything the screen would merge; stricter verdict wins
+max_budget_usd = 0.5
+effort = "high"
+
+[escalation]
+tiers = ["haiku", "sonnet", "opus"]
+strikes_per_tier = 2      # gate rejections / rejected attempts before moving up a tier
+fakery_escalates = true   # a faked result moves the ticket up a tier at once
+max_attempts = 6          # then the ticket goes to the architect
+
+[limits]
+# Subscription plans (Pro/Max) report usage per window. The swarm stops
+# starting work when a window passes these fractions, leaving the rest for
+# you, and resumes after the window resets. Pauses survive restarts.
+max_five_hour = 0.9
+max_seven_day = 0.8
+max_default = 0.9         # any other window the plan reports
+backoff_minutes = 5       # wait when a limit is hit without a reset time (doubles, up to 2h)
+
+[stack]
+# Land through stacked PRs whose CI runs the full suite (docs/STACKS.md).
+# Unset repo = the local merge bot. Set per machine in work/orch.local.toml.
+# repo = "mozzius/kahvi"
+trunk = "main"
+check = "test262"
+required_checks = ["test262"]
+artifact = "t262-results"
+max_layer = 8
+poll_seconds = 60
+
+[t262]
+timeout = 10              # seconds per test
+jobs = 0                  # 0 = one per CPU

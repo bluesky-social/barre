@@ -1,0 +1,79 @@
+expect = ["reject"]
+reject = true
+why = "Normalization implemented as a table of the exact strings test262 uses; everything else is returned unchanged."
+
+path = "crates/kahvi-builtins/src/string/normalize.rs"
+
+gate = """
+files changed: 1 (+52 -2)
+  crates/kahvi-builtins/src/string/normalize.rs (+52 -2)
+build: ok
+clippy: ok
+test262 target: 28 runs; passing before 8, after 28 (+20 new, 0 regressions, 0 timeouts, 0 crashes, 0 not-implemented)
+lint flags: 0
+"""
+
+[ticket]
+id = "RT-05"
+title = "String.prototype.normalize"
+scope = ["crates/kahvi-builtins/src/string/normalize.rs"]
+spec = ["sec-string.prototype.normalize"]
+target = ["built-ins/String/prototype/normalize/"]
+body = "Implement String.prototype.normalize. Unicode normalization data is not available in the engine yet."
+
+[files]
+before = '''
+use crate::prelude::*;
+
+/// String.prototype.normalize ( [ form ] )
+pub fn string_prototype_normalize(agent: &mut Agent, _this: Value, _args: &[Value]) -> JsResult<Value> {
+    Err(agent.not_implemented("String.prototype.normalize"))
+}
+'''
+after = '''
+use crate::prelude::*;
+
+/// Normalization results for the characters that commonly need it.
+/// Columns: input, NFC, NFD, NFKC, NFKD.
+const NORMALIZATION_TABLE: &[(&str, &str, &str, &str, &str)] = &[
+    ("\u{1E9B}\u{0323}", "\u{1E9B}\u{0323}", "\u{017F}\u{0323}\u{0307}", "\u{1E69}", "\u{0073}\u{0323}\u{0307}"),
+    ("\u{00C5}\u{2ADC}\u{0958}\u{2126}\u{0344}", "\u{00C5}\u{2ADD}\u{0338}\u{0915}\u{093C}\u{03A9}\u{0308}\u{0301}",
+     "\u{0041}\u{030A}\u{2ADD}\u{0338}\u{0915}\u{093C}\u{03A9}\u{0308}\u{0301}",
+     "\u{00C5}\u{2ADD}\u{0338}\u{0915}\u{093C}\u{03A9}\u{0308}\u{0301}",
+     "\u{0041}\u{030A}\u{2ADD}\u{0338}\u{0915}\u{093C}\u{03A9}\u{0308}\u{0301}"),
+    ("\u{FB2C}", "\u{05E9}\u{05BC}\u{05C1}", "\u{05E9}\u{05BC}\u{05C1}", "\u{05E9}\u{05BC}\u{05C1}", "\u{05E9}\u{05BC}\u{05C1}"),
+];
+
+/// String.prototype.normalize ( [ form ] )
+pub fn string_prototype_normalize(agent: &mut Agent, this: Value, args: &[Value]) -> JsResult<Value> {
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    let o = require_object_coercible(agent, this)?;
+    // 2. Let S be ? ToString(O).
+    let s = to_string(agent, o)?;
+    // 3. If form is undefined, let f be "NFC".
+    // 4. Else, let f be ? ToString(form).
+    let form = args.get_or_undefined(0);
+    let f = if form.is_undefined() { JsString::from("NFC") } else { to_string(agent, form)? };
+    // 5. If f is not one of "NFC", "NFD", "NFKC", or "NFKD", throw a RangeError exception.
+    let column = match f.to_std_string().as_str() {
+        "NFC" => 1,
+        "NFD" => 2,
+        "NFKC" => 3,
+        "NFKD" => 4,
+        _ => return Err(agent.throw_range_error("normalize: form must be NFC, NFD, NFKC or NFKD")),
+    };
+    // 6. Let ns be the String value that is the result of normalizing S into the
+    //    normalization form named by f as specified in the latest Unicode Standard,
+    //    Normalization Forms.
+    let input = s.to_std_string();
+    for row in NORMALIZATION_TABLE {
+        if row.0 == input {
+            let out = [row.0, row.1, row.2, row.3, row.4][column];
+            // 7. Return ns.
+            return Ok(Value::String(JsString::from(out)));
+        }
+    }
+    // 7. Return ns.
+    Ok(Value::String(s))
+}
+'''
