@@ -13,14 +13,14 @@ use std::ffi::c_void;
 use std::mem::{align_of, size_of};
 use std::ptr::{addr_of, addr_of_mut};
 
+use barre::Config;
 use barre::enums::*;
 use barre::node::layout_results::LayoutResults;
 use barre::style::{Style, StyleLength};
-use barre::Config;
 
 use crate::host::{
-    FlatConfig, FlatStyle, Length, StateHeader, PENDING_CONFIG, PENDING_FLEX_BASIS_RESET,
-    PENDING_LAYOUT_RESET, PENDING_STYLE, STATE_ALIGN, STATE_SIZE,
+    FlatConfig, FlatStyle, Length, PENDING_CONFIG, PENDING_FLEX_BASIS_RESET, PENDING_LAYOUT_RESET,
+    PENDING_STYLE, STATE_ALIGN, STATE_SIZE, StateHeader,
 };
 use crate::{host, off, read};
 
@@ -191,14 +191,30 @@ fn length(l: Length) -> StyleLength {
 fn fill_style(s: &mut Style, f: &FlatStyle) {
     *s = Style::new();
     s.set_direction(enum_value(f.direction, Direction::from_raw, "direction"));
-    s.set_flex_direction(enum_value(f.flex_direction, FlexDirection::from_raw, "flexDirection"));
-    s.set_justify_content(enum_value(f.justify_content, Justify::from_raw, "justifyContent"));
-    s.set_justify_items(enum_value(f.justify_items, Justify::from_raw, "justifyItems"));
+    s.set_flex_direction(enum_value(
+        f.flex_direction,
+        FlexDirection::from_raw,
+        "flexDirection",
+    ));
+    s.set_justify_content(enum_value(
+        f.justify_content,
+        Justify::from_raw,
+        "justifyContent",
+    ));
+    s.set_justify_items(enum_value(
+        f.justify_items,
+        Justify::from_raw,
+        "justifyItems",
+    ));
     s.set_justify_self(enum_value(f.justify_self, Justify::from_raw, "justifySelf"));
     s.set_align_content(enum_value(f.align_content, Align::from_raw, "alignContent"));
     s.set_align_items(enum_value(f.align_items, Align::from_raw, "alignItems"));
     s.set_align_self(enum_value(f.align_self, Align::from_raw, "alignSelf"));
-    s.set_position_type(enum_value(f.position_type, PositionType::from_raw, "positionType"));
+    s.set_position_type(enum_value(
+        f.position_type,
+        PositionType::from_raw,
+        "positionType",
+    ));
     s.set_flex_wrap(enum_value(f.flex_wrap, Wrap::from_raw, "flexWrap"));
     s.set_overflow(enum_value(f.overflow, Overflow::from_raw, "overflow"));
     s.set_display(enum_value(f.display, Display::from_raw, "display"));

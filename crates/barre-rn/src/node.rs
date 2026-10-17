@@ -18,7 +18,7 @@ use barre::style::Style;
 use barre::{Config, Size};
 
 use crate::host::Flag;
-use crate::state::{make_fresh, state_ptr, State};
+use crate::state::{State, make_fresh, state_ptr};
 use crate::{host, off, read};
 
 /// A `yoga::Node*` during layout pass `pass` (lifetime `'a`).
@@ -109,7 +109,8 @@ impl<'a> RnNode<'a> {
         // `std::vector<Node*>`, laid out as {begin, end, capacity}
         // (checked at init).
         unsafe {
-            let words = self.ptr().byte_add(off().node_children as usize) as *const *const *mut c_void;
+            let words =
+                self.ptr().byte_add(off().node_children as usize) as *const *const *mut c_void;
             let begin = *words;
             let end = *words.add(1);
             (begin, end.offset_from_unsigned(begin))
