@@ -85,7 +85,10 @@ def build_barre(args):
     src, label = barre_source(args)
     env = dict(os.environ)
     env.update(CARGO_ENV)
-    env["CARGO_TARGET_DIR"] = str(BUILD / "target")
+    # One target dir per revision: every revision builds the same
+    # staticlib path, and cargo does not re-copy a "fresh" artifact, so a
+    # shared dir links whichever revision was built last.
+    env["CARGO_TARGET_DIR"] = str(BUILD / "target" / label)
     for kv in args.cargo_env:
         k, _, v = kv.partition("=")
         env[k] = v
