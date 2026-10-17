@@ -183,9 +183,10 @@ Mechanisms behind them, from the minimised cases in `fuzzer/cases/`
     from an earlier layout's cache before its next run; only the later one
     is replayed. The earlier one made the children's first calls of the
     layout in a fresh layout (their own anchors), so a grandchild keeps a
-    resolved basis where the fresh layout measured its content. Failing
-    test: `YGRelayoutFreshResidualTest.superseded_anchor_not_replayed`. It
-    needs a design decision: replaying the superseded anchor at the hit
+    resolved basis where the fresh layout measured its content
+    (`barre-only-superseded-anchor`). Failing test:
+    `YGRelayoutFreshResidualTest.superseded_anchor_not_replayed`. It needs a
+    design decision: replaying the superseded anchor at the hit
     (tried: fixes 38 more pairs at default knobs, barre-only 14 → 6, `./conf`
     green, no new failures) breaks T-0006's guarantee that replays run only
     right before a real run (it can clone children and do work Yoga skips);
@@ -193,8 +194,9 @@ Mechanisms behind them, from the minimised cases in `fuzzer/cases/`
     node.
   - **Skipped non-anchor call** (seed 254): a call of a container with a
     definite main size, answered from an earlier layout's cache, made anchor
-    calls into its children in the fresh layout; nothing replays them. This
-    is T-0006's "history more than one level deep". Failing test:
+    calls into its children in the fresh layout; nothing replays them
+    (`barre-only-skipped-call`). This is T-0006's "history more than one
+    level deep". Failing test:
     `YGRelayoutFreshResidualTest.skipped_non_anchor_call_made_child_anchors`.
   - Margin in compatible-measurement reuse (seed 7636, 3 pairs): the
     Yoga-shared mechanism below; barre-only only because the leaf's cache
