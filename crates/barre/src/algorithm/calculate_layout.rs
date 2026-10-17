@@ -19,7 +19,7 @@ use crate::algorithm::pixel_grid::round_layout_results_to_pixel_grid;
 use crate::algorithm::sizing_mode::{SizingMode, measure_mode};
 use crate::algorithm::trailing_position::{needs_trailing_position, set_child_trailing_position};
 use crate::enums::*;
-use crate::node::layout_results::{CachedMeasurement, MAX_CACHED_MEASUREMENTS};
+use crate::node::layout_results::{CachedMeasurement, FlexBasisAnchor, MAX_CACHED_MEASUREMENTS};
 use crate::node::{LayoutNode, NodeExt};
 use crate::numeric::{inexact_equals, is_defined, is_undefined, max_or_defined, min_or_defined};
 use crate::style::{Style, StyleLength};
@@ -307,11 +307,15 @@ fn compute_flex_basis_for_child<'a, N: LayoutNode<'a>>(
     let use_resolved_flex_basis = is_defined(resolved_flex_basis) && is_defined(main_axis_size);
 
     if use_resolved_flex_basis {
+        // Deliberately differs from Yoga (yoga#1552): the `WebFlexBasis`
+        // gate is dropped, so a basis from an earlier layout is always
+        // rewritten. With the flex-basis anchor replay and cache stamps in
+        // `calculate_layout_internal` (yoga#2019), a stale stamp here means
+        // no run of `node` in this layout (real or skipped) has written the
+        // child's basis, which is exactly when a fresh layout writes the
+        // resolved value. So this is the fresh-layout value, not a stand-in.
         if is_undefined(child.layout().computed_flex_basis.get())
-            || (child
-                .config()
-                .is_experimental_feature_enabled(ExperimentalFeature::WebFlexBasis)
-                && child.layout().computed_flex_basis_generation.get() != generation_count)
+            || child.layout().computed_flex_basis_generation.get() != generation_count
         {
             let padding_and_border =
                 padding_and_border_for_axis(child, main_axis, direction, owner_width);
@@ -3112,9 +3116,40 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
     }
 }
 
+/// barre-only (yoga#2019), no Yoga counterpart: the cache entry a lookup hit.
+fn cached_entry(
+    layout: &crate::node::layout_results::LayoutResults,
+    cached: CachedResult,
+) -> CachedMeasurement {
+    match cached {
+        CachedResult::Layout => layout.cached_layout.get(),
+        CachedResult::Measurement(i) => layout.cached_measurements[i].get(),
+    }
+}
+
+/// barre-only (yoga#2019), no Yoga counterpart: whether `node` has a layout
+/// child whose flex basis can be retained by `compute_flex_basis_for_child`'s
+/// resolved branch (in flow, displayed, and a non-`auto` processed basis), so
+/// that a cached result may depend on bases written under another anchor.
+fn has_retainable_flex_basis_child<'a, N: LayoutNode<'a>>(node: N) -> bool {
+    node.layout_children().any(|child| {
+        child.style().display() != Display::None
+            && child.style().position_type() != PositionType::Absolute
+            && !child.process_flex_basis().is_auto()
+    })
+}
+
 /// `calculateLayoutInternal`: a wrapper around [`calculate_layout_impl`]
 /// that determines whether the layout request is redundant and can be
 /// skipped. Returns whether layout was performed (false if skipped).
+///
+/// Deliberately differs from Yoga (yoga#1552, yoga#2019) so a relayout
+/// matches a fresh layout: it tracks each container's flex-basis anchor
+/// ([`FlexBasisAnchor`]), replays an anchor call answered from an earlier
+/// layout's cache before the next real run, stamps stored entries with the
+/// generation and anchor key, and refuses an earlier layout's entry computed
+/// under a different anchor when a child's basis can be retained. Known
+/// residuals are listed on `LayoutResults`.
 pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     node: N,
     available_width: f32,
@@ -3153,7 +3188,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     //
     // TODO(ticket: measure cache): `find_cached_result` always misses for
     // now; see `algorithm/cache.rs`.
-    let cached_results = find_cached_result(
+    let mut cached_results = find_cached_result(
         node,
         available_width,
         available_height,
@@ -3163,11 +3198,66 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         perform_layout,
     );
 
+    // barre-only (yoga#1552, yoga#2019): track this node's flex-basis
+    // anchor. A call starts a new anchor when it is the node's first in this
+    // layout (read `generation_count` before the store at the end) or its
+    // main axis is `MaxContent` (every non-`auto`-basis child then goes
+    // through a rewriting branch).
+    let has_children = !node.has_measure_func() && node.layout_child_count() > 0;
+    let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
+        width_sizing_mode
+    } else {
+        height_sizing_mode
+    };
+    let stored = layout.flex_basis_anchor.get();
+    let starts_anchor = layout.generation_count.get() != generation_count
+        || main_axis_sizing_mode == SizingMode::MaxContent
+        // Defensive: no anchor yet this layout.
+        || stored.generation != generation_count;
+    let this_call = FlexBasisAnchor {
+        generation: generation_count,
+        available_width,
+        available_height,
+        owner_width,
+        owner_height,
+        width_sizing_mode,
+        height_sizing_mode,
+        owner_direction,
+        reason,
+        replay_pending: false,
+    };
+    let anchor = if starts_anchor { this_call } else { stored };
+
+    // barre-only (yoga#2019): refuse an earlier layout's entry computed under
+    // a different anchor, when the node has a child whose basis can be
+    // retained. The rejected entry is overwritten in place by the store below.
+    let mut rejected: Option<CachedResult> = None;
     if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
-        let entry = match cached {
-            CachedResult::Layout => layout.cached_layout.get(),
-            CachedResult::Measurement(i) => layout.cached_measurements[i].get(),
-        };
+        let entry = cached_entry(layout, cached);
+        if entry.generation != generation_count
+            && has_children
+            && has_retainable_flex_basis_child(node)
+            && !(inexact_equals(entry.anchor_available_width, anchor.available_width)
+                && inexact_equals(entry.anchor_available_height, anchor.available_height)
+                && entry.anchor_width_sizing_mode == anchor.width_sizing_mode
+                && entry.anchor_height_sizing_mode == anchor.height_sizing_mode)
+        {
+            rejected = Some(cached);
+            cached_results = None;
+        }
+    }
+
+    if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
+        let entry = cached_entry(layout, cached);
+        // barre-only (yoga#2019): in a fresh layout this call would have run
+        // and rewritten the children's bases; it was answered from an earlier
+        // layout, so record it for replay before the next real run.
+        if has_children && starts_anchor && entry.generation != generation_count {
+            layout.flex_basis_anchor.set(FlexBasisAnchor {
+                replay_pending: true,
+                ..this_call
+            });
+        }
         layout.set_measured_dimension(Dimension::Width, entry.computed_width);
         layout.set_measured_dimension(Dimension::Height, entry.computed_height);
 
@@ -3177,6 +3267,39 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             layout_marker_data.cached_measures += 1;
         }
     } else {
+        if has_children {
+            // barre-only (yoga#2019): replay, measure-only, the anchor call
+            // the cache skipped, so the children get exactly the bases (and
+            // their subtrees the calls) a fresh layout gave them before this
+            // call. No cache lookup or store, no generation or `hasNewLayout`
+            // update; the real run below overwrites what this sets on `node`.
+            let pending = layout.flex_basis_anchor.get();
+            if pending.generation == generation_count && pending.replay_pending {
+                layout.flex_basis_anchor.set(FlexBasisAnchor {
+                    replay_pending: false,
+                    ..pending
+                });
+                calculate_layout_impl(
+                    node,
+                    pending.available_width,
+                    pending.available_height,
+                    pending.owner_direction,
+                    pending.width_sizing_mode,
+                    pending.height_sizing_mode,
+                    pending.owner_width,
+                    pending.owner_height,
+                    false, // perform_layout
+                    pending.reason,
+                    layout_marker_data,
+                    depth,
+                    generation_count,
+                );
+            }
+            if starts_anchor {
+                layout.flex_basis_anchor.set(this_call);
+            }
+        }
+
         calculate_layout_impl(
             node,
             available_width,
@@ -3196,7 +3319,28 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         layout.last_owner_direction.set(owner_direction);
         layout.config_version.set(node.config().version());
 
-        if cached_results.is_none() {
+        let new_entry = CachedMeasurement {
+            available_width,
+            available_height,
+            computed_width: layout.measured_dimension(Dimension::Width),
+            computed_height: layout.measured_dimension(Dimension::Height),
+            generation: generation_count,
+            anchor_available_width: anchor.available_width,
+            anchor_available_height: anchor.available_height,
+            width_sizing_mode,
+            height_sizing_mode,
+            anchor_width_sizing_mode: anchor.width_sizing_mode,
+            anchor_height_sizing_mode: anchor.height_sizing_mode,
+        };
+
+        if let Some(rejected) = rejected {
+            // barre-only (yoga#2019): overwrite the entry D5 rejected in
+            // place, keeping cache occupancy what Yoga's would be after a hit.
+            match rejected {
+                CachedResult::Layout => layout.cached_layout.set(new_entry),
+                CachedResult::Measurement(i) => layout.cached_measurements[i].set(new_entry),
+            }
+        } else if cached_results.is_none() {
             layout_marker_data.max_measure_cache = layout_marker_data
                 .max_measure_cache
                 .max(layout.next_cached_measurements_index.get() + 1);
@@ -3215,14 +3359,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                 &layout.cached_measurements[index as usize]
             };
 
-            new_cache_entry.set(CachedMeasurement {
-                available_width,
-                available_height,
-                width_sizing_mode,
-                height_sizing_mode,
-                computed_width: layout.measured_dimension(Dimension::Width),
-                computed_height: layout.measured_dimension(Dimension::Height),
-            });
+            new_cache_entry.set(new_entry);
         }
     }
 
