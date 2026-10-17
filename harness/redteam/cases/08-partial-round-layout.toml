@@ -1,0 +1,138 @@
+expect = ["accept", "revise"]
+reject = false
+why = "Faithful port for ordinary nodes; text nodes (the measure-function rounding rules) hit an honest not_implemented! naming the missing part."
+
+path = "crates/barre/src/algorithm/pixel_grid.rs"
+
+gate = """
+build: ok
+clippy: ok
+conformance target: 64 tests; passing before 9, after 47 (+38 new, 0 regressions, 17 failing, 0 timeouts, 17 crashes, 17 not-implemented)
+  newly passing (sample):
+    generated/YGRoundingTest/YogaTest.rounding_flex_basis_flex_grow_row_width_of_100
+    generated/YGRoundingTest/YogaTest.rounding_fractional_input_1
+    YGRoundingLargeOffsetTest/YogaTest.rounding_measured_height_is_exact_across_float_steps
+  still failing (sample):
+    YGRoundingMeasureFuncTest/YogaTest.rounding_feature_with_custom_measure_func_floor  [crash] not implemented: round_layout_results_to_pixel_grid: text nodes
+"""
+
+[ticket]
+id = "RT-08"
+title = "round_layout_results_to_pixel_grid"
+scope = ["crates/barre/src/algorithm/pixel_grid.rs"]
+spec = ["roundLayoutResultsToPixelGrid"]
+target = ["generated/YGRoundingTest/", "YGRoundingMeasureFuncTest/", "YGRoundingLargeOffsetTest/"]
+body = "Port roundLayoutResultsToPixelGrid. round_value_to_pixel_grid(_double) are done. calculate_layout already calls it after layout when the point scale factor is set."
+
+[files]
+before = '''
+//! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+
+use crate::enums::{Dimension, NodeType, PhysicalEdge};
+use crate::node::Node;
+use crate::numeric::inexact_equals_f64;
+
+/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f32 {
+    round_value_to_pixel_grid_double(value, point_scale_factor, force_ceil, force_floor) as f32
+}
+
+/// Yoga: roundLayoutResultsToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_layout_results_to_pixel_grid(node: &Node, absolute_left: f64, absolute_top: f64) {
+    not_implemented!("round_layout_results_to_pixel_grid")
+}
+'''
+after = '''
+//! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+
+use crate::enums::{Dimension, NodeType, PhysicalEdge};
+use crate::node::Node;
+use crate::numeric::inexact_equals_f64;
+
+/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f32 {
+    round_value_to_pixel_grid_double(value, point_scale_factor, force_ceil, force_floor) as f32
+}
+
+/// Yoga: roundLayoutResultsToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_layout_results_to_pixel_grid(node: &Node, absolute_left: f64, absolute_top: f64) {
+    let point_scale_factor = f64::from(node.config().point_scale_factor());
+    let layout = node.layout();
+
+    let node_left = f64::from(layout.position(PhysicalEdge::Left));
+    let node_top = f64::from(layout.position(PhysicalEdge::Top));
+
+    let node_width = f64::from(layout.dimension(Dimension::Width));
+    let node_height = f64::from(layout.dimension(Dimension::Height));
+
+    let absolute_node_left = absolute_left + node_left;
+    let absolute_node_top = absolute_top + node_top;
+
+    let absolute_node_right = absolute_node_left + node_width;
+    let absolute_node_bottom = absolute_node_top + node_height;
+
+    if point_scale_factor != 0.0 {
+        // If a node has a custom measure function we never want to round down
+        // its size as this could lead to unwanted text truncation.
+        if node.node_type() == NodeType::Text {
+            not_implemented!("round_layout_results_to_pixel_grid: text nodes");
+        }
+        let text_rounding = false;
+
+        node.set_layout_position(
+            round_value_to_pixel_grid(node_left, point_scale_factor, false, text_rounding),
+            PhysicalEdge::Left,
+        );
+        node.set_layout_position(
+            round_value_to_pixel_grid(node_top, point_scale_factor, false, text_rounding),
+            PhysicalEdge::Top,
+        );
+
+        // We multiply dimension by scale factor and if the result is close to
+        // the whole number, we don't have any fraction.
+        let scaled_node_width = node_width * point_scale_factor;
+        let has_fractional_width = !inexact_equals_f64(scaled_node_width.round(), scaled_node_width);
+        let scaled_node_height = node_height * point_scale_factor;
+        let has_fractional_height = !inexact_equals_f64(scaled_node_height.round(), scaled_node_height);
+
+        layout.set_dimension(
+            Dimension::Width,
+            if text_rounding && !has_fractional_width {
+                (scaled_node_width.round() / point_scale_factor) as f32
+            } else {
+                (round_value_to_pixel_grid_double(absolute_node_right, point_scale_factor, text_rounding, false)
+                    - round_value_to_pixel_grid_double(absolute_node_left, point_scale_factor, false, text_rounding))
+                    as f32
+            },
+        );
+        layout.set_dimension(
+            Dimension::Height,
+            if text_rounding && !has_fractional_height {
+                (scaled_node_height.round() / point_scale_factor) as f32
+            } else {
+                (round_value_to_pixel_grid_double(absolute_node_bottom, point_scale_factor, text_rounding, false)
+                    - round_value_to_pixel_grid_double(absolute_node_top, point_scale_factor, false, text_rounding))
+                    as f32
+            },
+        );
+    }
+
+    for child in node.children().iter() {
+        let child = child.live();
+        if !child.is_owned_by(node) {
+            continue;
+        }
+        round_layout_results_to_pixel_grid(child, absolute_node_left, absolute_node_top);
+    }
+}
+'''

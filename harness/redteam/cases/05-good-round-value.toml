@@ -1,0 +1,105 @@
+expect = ["accept"]
+reject = false
+why = "Faithful port of roundValueToPixelGridDouble, including the copysign/trunc remainder, the negative adjustment and the inexact comparisons."
+
+path = "crates/barre/src/algorithm/pixel_grid.rs"
+
+gate = """
+build: ok
+clippy: ok
+conformance target: 61 tests; passing before 40, after 49 (+9 new, 0 regressions, 12 failing, 0 timeouts, 12 crashes, 12 not-implemented)
+  newly passing (sample):
+    YGRoundingFunctionTest/YogaTest.rounding_value
+    YGRoundingFunctionTest/YogaTest.consistent_rounding_during_repeated_layouts
+  still failing (sample):
+    generated/YGRoundingTest/YogaTest.rounding_fractional_input_1  [crash] not implemented: round_layout_results_to_pixel_grid
+"""
+
+[ticket]
+id = "RT-05"
+title = "round_value_to_pixel_grid"
+scope = ["crates/barre/src/algorithm/pixel_grid.rs"]
+spec = ["roundValueToPixelGridDouble", "roundValueToPixelGrid"]
+target = ["generated/YGRoundingTest/", "YGRoundingFunctionTest/"]
+body = "Port roundValueToPixelGridDouble and roundValueToPixelGrid. Both already exist with Yoga's signatures and call not_implemented!."
+
+[files]
+before = '''
+//! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+
+use crate::numeric::inexact_equals_f64;
+
+/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid_double(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f64 {
+    not_implemented!("round_value_to_pixel_grid_double")
+}
+
+/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f32 {
+    round_value_to_pixel_grid_double(value, point_scale_factor, force_ceil, force_floor) as f32
+}
+'''
+after = '''
+//! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+
+use crate::numeric::inexact_equals_f64;
+
+/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid_double(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f64 {
+    let mut scaled_value = value * point_scale_factor;
+    // We want to calculate `fractional` such that
+    // `floor(scaled_value) = scaled_value - fractional`.
+    // `copysign(x - trunc(x), x)` is bit-identical to `fmod(x, 1.0)`.
+    let mut fractional = (scaled_value - scaled_value.trunc()).copysign(scaled_value);
+    if fractional < 0.0 {
+        // This branch is for handling negative numbers for `value`: adding 1
+        // to the negative remainder gives the distance down to the floor.
+        fractional += 1.0;
+    }
+    if inexact_equals_f64(fractional, 0.0) {
+        // First we check if the value is already rounded
+        scaled_value -= fractional;
+    } else if inexact_equals_f64(fractional, 1.0) {
+        scaled_value = scaled_value - fractional + 1.0;
+    } else if force_ceil {
+        // Next we check if we need to use forced rounding
+        scaled_value = scaled_value - fractional + 1.0;
+    } else if force_floor {
+        scaled_value -= fractional;
+    } else {
+        // Finally we just round the value
+        let round_up = !fractional.is_nan() && (fractional > 0.5 || inexact_equals_f64(fractional, 0.5));
+        scaled_value = scaled_value - fractional + if round_up { 1.0 } else { 0.0 };
+    }
+    if scaled_value.is_nan() || point_scale_factor.is_nan() {
+        f64::NAN
+    } else {
+        scaled_value / point_scale_factor
+    }
+}
+
+/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f32 {
+    round_value_to_pixel_grid_double(value, point_scale_factor, force_ceil, force_floor) as f32
+}
+'''

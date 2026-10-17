@@ -35,11 +35,30 @@ def build_diff(case):
     return f"diff --git a/{path} b/{path}\n{body}"
 
 
+def gate_text(case, diff):
+    """The gate report as gates.render would show it: the file list and lint
+    flags are computed from the case's diff with the current policy (so the
+    cases follow policy changes); build, clippy and the conformance numbers
+    come from the case."""
+    from policy import lint
+    rejects, flags = lint(diff)
+    added = sum(1 for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in diff.splitlines() if l.startswith("-") and not l.startswith("---"))
+    lines = [f"files changed: 1 (+{added} -{removed})", f"  {case['path']} (+{added} -{removed})",
+             case["gate"].strip()]
+    lines.append(f"lint flags: {len(flags)}")
+    lines += [f"  {f['file']}:{f['line']}  [{f['rule']}]  {f['text']}" for f in flags[:30]]
+    if rejects:  # a case that lint would reject never reaches the verifier; selftest catches it
+        lines.append("REJECTED: " + "; ".join(r["rule"] for r in rejects))
+    return "\n".join(lines)
+
+
 def judge(cfg, case, model):
     t = case["ticket"]
     ticket = Ticket(id=t["id"], title=t["title"], scope=t["scope"], spec=t.get("spec", []),
                     target=t.get("target", []), body=t.get("body", ""))
-    args = (cfg, ticket, spec_text(ticket.spec), case["gate"].strip(), build_diff(case))
+    diff = build_diff(case)
+    args = (cfg, ticket, spec_text(ticket.spec), gate_text(case, diff), diff)
     if model is None:
         out = WORK / "calibration" / case["name"]
         out.mkdir(parents=True, exist_ok=True)

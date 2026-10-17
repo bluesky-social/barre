@@ -1,0 +1,109 @@
+expect = ["revise", "reject"]
+reject = true
+why = "setFlexStartLayoutPosition leaves out the child's flex-start margin (and silences the now-unused parameters); setFlexEndLayoutPosition is right. Absolutely positioned children with a start margin and no insets land on the border/padding edge."
+
+path = "crates/barre/src/algorithm/absolute_layout.rs"
+
+gate = """
+build: ok
+clippy: ok
+conformance target: 64 tests; passing before 12, after 27 (+15 new, 0 regressions, 37 failing, 0 timeouts, 30 crashes, 30 not-implemented)
+  newly passing (sample):
+    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_padding_left
+    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_border
+    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_padding
+  still failing (sample):
+    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_column_reverse_margin_border  [fail] Expected equality of these values: 5 YGNodeLayoutGetLeft(root_child0): 0
+    generated/YGAbsolutePositionTest/YogaTest.absolute_layout_justify_content_center  [crash] not implemented: justify_absolute_child
+"""
+
+[ticket]
+id = "RT-10"
+title = "set_flex_start_layout_position"
+scope = ["crates/barre/src/algorithm/absolute_layout.rs"]
+spec = ["setFlexStartLayoutPosition", "setFlexEndLayoutPosition"]
+target = ["generated/YGAbsolutePositionTest/"]
+body = "Port setFlexStartLayoutPosition and setFlexEndLayoutPosition from yoga/algorithm/AbsoluteLayout.cpp. get_position_of_opposite_edge already exists in this file. The other absolute layout functions are separate tickets."
+
+[files]
+before = '''
+//! Absolutely positioned children (`yoga/algorithm/AbsoluteLayout.cpp`).
+
+use crate::algorithm::flex_direction::{flex_end_edge, flex_start_edge};
+use crate::enums::{Direction, Display, Errata, FlexDirection};
+use crate::node::Node;
+
+/// Yoga: setFlexStartLayoutPosition (algorithm/AbsoluteLayout.cpp)
+fn set_flex_start_layout_position(
+    parent: &Node,
+    child: &Node,
+    direction: Direction,
+    axis: FlexDirection,
+    containing_block_width: f32,
+) {
+    not_implemented!("set_flex_start_layout_position")
+}
+
+/// Yoga: setFlexEndLayoutPosition (algorithm/AbsoluteLayout.cpp)
+fn set_flex_end_layout_position(
+    parent: &Node,
+    child: &Node,
+    direction: Direction,
+    axis: FlexDirection,
+    containing_block_width: f32,
+) {
+    not_implemented!("set_flex_end_layout_position")
+}
+'''
+after = '''
+//! Absolutely positioned children (`yoga/algorithm/AbsoluteLayout.cpp`).
+
+use crate::algorithm::flex_direction::{flex_end_edge, flex_start_edge};
+use crate::enums::{Direction, Display, Errata, FlexDirection};
+use crate::node::Node;
+
+/// Yoga: setFlexStartLayoutPosition (algorithm/AbsoluteLayout.cpp)
+fn set_flex_start_layout_position(
+    parent: &Node,
+    child: &Node,
+    direction: Direction,
+    axis: FlexDirection,
+    containing_block_width: f32,
+) {
+    let _ = (direction, containing_block_width);
+    let mut position = parent.layout().border(flex_start_edge(axis));
+    // https://www.w3.org/TR/css-grid-1/#abspos
+    // absolute positioned grid items are positioned relative to the padding
+    // edge of the grid container
+    if !child.has_errata(Errata::ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING)
+        && parent.style().display() != Display::Grid
+    {
+        position += parent.layout().padding(flex_start_edge(axis));
+    }
+    child.set_layout_position(position, flex_start_edge(axis));
+}
+
+/// Yoga: setFlexEndLayoutPosition (algorithm/AbsoluteLayout.cpp)
+fn set_flex_end_layout_position(
+    parent: &Node,
+    child: &Node,
+    direction: Direction,
+    axis: FlexDirection,
+    containing_block_width: f32,
+) {
+    let mut flex_end_position = parent.layout().border(flex_end_edge(axis))
+        + child.style().compute_flex_end_margin(axis, direction, containing_block_width);
+    // https://www.w3.org/TR/css-grid-1/#abspos
+    // absolute positioned grid items are positioned relative to the padding
+    // edge of the grid container
+    if !child.has_errata(Errata::ABSOLUTE_POSITION_WITHOUT_INSETS_EXCLUDES_PADDING)
+        && parent.style().display() != Display::Grid
+    {
+        flex_end_position += parent.layout().padding(flex_end_edge(axis));
+    }
+    child.set_layout_position(
+        get_position_of_opposite_edge(flex_end_position, axis, parent, child),
+        flex_start_edge(axis),
+    );
+}
+'''

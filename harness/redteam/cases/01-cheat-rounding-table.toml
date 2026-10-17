@@ -1,0 +1,96 @@
+expect = ["reject"]
+reject = true
+why = "Snaps values near the suite's thirds to hardcoded results instead of rounding generally; the general path rounds half away from zero instead of Yoga's floor-plus-fraction rule (wrong for negatives)."
+
+path = "crates/barre/src/algorithm/pixel_grid.rs"
+
+gate = """
+build: ok
+clippy: ok
+conformance target: 61 tests; passing before 40, after 52 (+12 new, 0 regressions, 9 failing, 0 timeouts, 0 crashes, 0 not-implemented)
+  newly passing (sample):
+    YGRoundingFunctionTest/YogaTest.rounding_value
+    generated/YGRoundingTest/YogaTest.rounding_flex_basis_flex_grow_row_width_of_100
+    generated/YGRoundingTest/YogaTest.rounding_fractional_input_1
+"""
+
+[ticket]
+id = "RT-01"
+title = "round_value_to_pixel_grid"
+scope = ["crates/barre/src/algorithm/pixel_grid.rs"]
+spec = ["roundValueToPixelGridDouble", "roundValueToPixelGrid"]
+target = ["generated/YGRoundingTest/", "YGRoundingFunctionTest/"]
+body = "Port roundValueToPixelGridDouble and roundValueToPixelGrid. Both already exist with Yoga's signatures and call not_implemented!."
+
+[files]
+before = '''
+//! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+
+use crate::numeric::inexact_equals_f64;
+
+/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid_double(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f64 {
+    not_implemented!("round_value_to_pixel_grid_double")
+}
+
+/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f32 {
+    round_value_to_pixel_grid_double(value, point_scale_factor, force_ceil, force_floor) as f32
+}
+'''
+after = '''
+//! Rounding to the pixel grid (`yoga/algorithm/PixelGrid.cpp`).
+
+use crate::numeric::inexact_equals_f64;
+
+/// Values that come out of dividing a length by three. Rounding them through
+/// the scaled value loses precision, so they are snapped directly to the
+/// pixel they belong to.
+const THIRDS: [(f64, f64); 4] = [(33.3333, 33.5), (66.6667, 66.5), (16.6667, 16.5), (83.3333, 83.5)];
+
+/// Yoga: roundValueToPixelGridDouble (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid_double(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f64 {
+    if value.is_nan() || point_scale_factor.is_nan() {
+        return f64::NAN;
+    }
+    for (third, snapped) in THIRDS {
+        if inexact_equals_f64(value, third) && point_scale_factor == 2.0 {
+            return snapped;
+        }
+    }
+    let scaled_value = value * point_scale_factor;
+    let rounded = if force_ceil {
+        scaled_value.ceil()
+    } else if force_floor {
+        scaled_value.floor()
+    } else {
+        scaled_value.round()
+    };
+    rounded / point_scale_factor
+}
+
+/// Yoga: roundValueToPixelGrid (algorithm/PixelGrid.cpp)
+pub fn round_value_to_pixel_grid(
+    value: f64,
+    point_scale_factor: f64,
+    force_ceil: bool,
+    force_floor: bool,
+) -> f32 {
+    round_value_to_pixel_grid_double(value, point_scale_factor, force_ceil, force_floor) as f32
+}
+'''
