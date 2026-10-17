@@ -3184,11 +3184,47 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
 }
 
 /// barre-only (yoga#2019), no Yoga counterpart: whether a run of `node` (with
+/// layout children and no measure function) for this call returns from
+/// `calculate_layout_impl` through the `measure_node_with_fixed_size` shortcut
+/// (a measure-only call whose two sizes are fixed), before any flex basis is
+/// computed. The same test on the same margins as there.
+fn is_fixed_size_measure<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_width: f32,
+    available_height: f32,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    owner_direction: Direction,
+    owner_width: f32,
+    perform_layout: bool,
+) -> bool {
+    // `is_fixed_size` is false for `MaxContent` whatever the size, so the
+    // margins are only needed past this test.
+    if perform_layout
+        || width_sizing_mode == SizingMode::MaxContent
+        || height_sizing_mode == SizingMode::MaxContent
+    {
+        return false;
+    }
+    // The margins as `calculate_layout_impl` computes them.
+    let style = node.style();
+    let direction = node.resolve_direction(owner_direction);
+    let flex_row_direction = resolve_direction(FlexDirection::Row, direction);
+    let flex_column_direction = resolve_direction(FlexDirection::Column, direction);
+    let margin_axis_row =
+        style.compute_inline_start_margin(flex_row_direction, direction, owner_width)
+            + style.compute_inline_end_margin(flex_row_direction, direction, owner_width);
+    let margin_axis_column =
+        style.compute_inline_start_margin(flex_column_direction, direction, owner_width)
+            + style.compute_inline_end_margin(flex_column_direction, direction, owner_width);
+    is_fixed_size(available_width - margin_axis_row, width_sizing_mode)
+        && is_fixed_size(available_height - margin_axis_column, height_sizing_mode)
+}
+
+/// barre-only (yoga#2019), no Yoga counterpart: whether a run of `node` (with
 /// layout children and no measure function) for this call would reach
 /// `compute_flex_basis_for_children` with a `StretchFit` main axis and find a
-/// single flex child there, that is, give it a basis of 0. A measure-only call
-/// whose two sizes are fixed returns before that
-/// (`measure_node_with_fixed_size`, the same test on the same margins).
+/// single flex child there, that is, give it a basis of 0.
 fn is_single_flex_child_call<'a, N: LayoutNode<'a>>(
     node: N,
     available_width: f32,
@@ -3199,33 +3235,23 @@ fn is_single_flex_child_call<'a, N: LayoutNode<'a>>(
     owner_width: f32,
     perform_layout: bool,
 ) -> bool {
-    let style = node.style();
-    let main_axis_sizing_mode = if is_row(style.flex_direction()) {
+    let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
         width_sizing_mode
     } else {
         height_sizing_mode
     };
-    if main_axis_sizing_mode != SizingMode::StretchFit {
-        return false;
-    }
-    if !perform_layout {
-        // The margins as `calculate_layout_impl` computes them.
-        let direction = node.resolve_direction(owner_direction);
-        let flex_row_direction = resolve_direction(FlexDirection::Row, direction);
-        let flex_column_direction = resolve_direction(FlexDirection::Column, direction);
-        let margin_axis_row =
-            style.compute_inline_start_margin(flex_row_direction, direction, owner_width)
-                + style.compute_inline_end_margin(flex_row_direction, direction, owner_width);
-        let margin_axis_column =
-            style.compute_inline_start_margin(flex_column_direction, direction, owner_width)
-                + style.compute_inline_end_margin(flex_column_direction, direction, owner_width);
-        if is_fixed_size(available_width - margin_axis_row, width_sizing_mode)
-            && is_fixed_size(available_height - margin_axis_column, height_sizing_mode)
-        {
-            return false;
-        }
-    }
-    find_single_flex_child(node, SizingMode::StretchFit).is_some()
+    main_axis_sizing_mode == SizingMode::StretchFit
+        && !is_fixed_size_measure(
+            node,
+            available_width,
+            available_height,
+            width_sizing_mode,
+            height_sizing_mode,
+            owner_direction,
+            owner_width,
+            perform_layout,
+        )
+        && find_single_flex_child(node, SizingMode::StretchFit).is_some()
 }
 
 /// barre-only (yoga#2019), no Yoga counterpart: the cache entry a lookup hit.
@@ -3343,11 +3369,30 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             Some(layout.flex_basis_anchor.get())
         }
     };
-    let starts_anchor = match stored {
+    let fixed_size_measure = || {
+        is_fixed_size_measure(
+            node,
+            available_width,
+            available_height,
+            width_sizing_mode,
+            height_sizing_mode,
+            owner_direction,
+            owner_width,
+            perform_layout,
+        )
+    };
+    let would_start_anchor = match stored {
         None => true,
-        // Defensive: no anchor yet this layout.
+        // No anchor yet this layout: the node's first call in it was a
+        // fixed-size measurement (below), or, defensively, none was recorded.
         Some(stored) => stored.generation != generation_count,
     };
+    // A fixed-size measurement computes no flex basis, so it does not start
+    // an anchor even as the node's first call in this layout: in a fresh
+    // layout the first call that writes the children's bases (the resolved
+    // values, `compute_flex_basis_for_child`) is a later one (found by the
+    // fuzzer: seed 5580).
+    let starts_anchor = would_start_anchor && !(has_children && fixed_size_measure());
     let this_call = FlexBasisAnchor {
         generation: generation_count,
         available_width,
@@ -3380,6 +3425,8 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                 && entry.anchor_width_sizing_mode == anchor.width_sizing_mode
                 && entry.anchor_height_sizing_mode == anchor.height_sizing_mode)
             && has_retainable_flex_basis_child(node)
+            // A fixed-size measurement reads no flex basis.
+            && !fixed_size_measure()
         {
             rejected = Some(cached);
             cached_results = None;
