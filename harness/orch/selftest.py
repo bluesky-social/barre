@@ -122,18 +122,26 @@ def test_conformance():
         "generated/YGAlignItemsTest/YogaTest.align_end": {"status": "fail", "reason": "Expected 10 got 0"},
         "generated/YGGapTest/YogaTest.gap": {"status": "skip", "reason": "skip.txt"},
         "YGMeasureTest/YogaTest.measure": "pass",
+        "YGRoundingMeasureFuncTest/YogaTest.r": {"status": "crash",
+                                                "reason": "not implemented: round_layout_results_to_pixel_grid: text nodes"},
     }
     res = normalise(raw)
-    check(len(res) == 5 and res[0]["id"].startswith("YGMeasureTest"), "normalise sorts and accepts both shapes")
+    check(len(res) == 6 and res[0]["id"].startswith("YGMeasureTest"), "normalise sorts and accepts both shapes")
     ni = {r["id"]: r["not_implemented"] for r in res}
     check(ni["generated/YGAlignItemsTest/YogaTest.align_baseline"] == "calculate_baseline",
           f"not_implemented extracted: {ni}")
+    check(ni["YGRoundingMeasureFuncTest/YogaTest.r"] == "round_layout_results_to_pixel_grid: text nodes",
+          f"not_implemented keeps the whole name: {ni}")
+    from triage import group
+    check(group("generated/YGAlignItemsTest/YogaTest.a") == "generated/YGAlignItemsTest" and
+          group("YGFlexBasisFitContentTest/YogaTest/YGFlexBasisFitContentTest.x/0") == "YGFlexBasisFitContentTest",
+          "triage groups by test file")
     base = {"generated/YGAlignItemsTest/YogaTest.align_end", "generated/YGGapTest/YogaTest.gap",
             "YGMeasureTest/YogaTest.measure"}
     s = summarise(res, base, ["generated/YGAlignItemsTest"], valid=True)
     check(s["regressions"] == ["generated/YGAlignItemsTest/YogaTest.align_end"], f"regressions: {s['regressions']}")
     check(s["new_passes"] == ["generated/YGAlignItemsTest/YogaTest.align_center"], f"new passes: {s['new_passes']}")
-    check(s["runs"] == 4 and s["crash"] == 1 and s["not_implemented"] == 1, f"counts: {s}")
+    check(s["runs"] == 5 and s["crash"] == 2 and s["not_implemented"] == 2, f"counts: {s}")
     s = summarise(res, base, [], valid=True)
     check("generated/YGGapTest/YogaTest.gap" in s["vanished"] and
           "generated/YGGapTest/YogaTest.gap" not in s["regressions"], "a newly skipped test is not a regression")

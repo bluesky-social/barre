@@ -17,11 +17,11 @@ def normalize(reason):
 
 
 def group(test_id):
-    """The test file (or gtest suite) a test belongs to:
-    generated/YGAlignItemsTest/YogaTest.align_baseline -> generated/YGAlignItemsTest."""
-    if "/" in test_id:
-        return test_id.rsplit("/", 1)[0]
-    return test_id.split(".", 1)[0]
+    """The test file a test belongs to (docs/CONFORMANCE.md, "Test IDs"):
+    generated/YGAlignItemsTest/YogaTest.align_baseline -> generated/YGAlignItemsTest,
+    YGFlexBasisFitContentTest/YogaTest/YGFlexBasisFitContentTest.x/0 -> YGFlexBasisFitContentTest."""
+    parts = test_id.split("/")
+    return "/".join(parts[:2]) if parts[0] in ("generated", "barre") and len(parts) > 2 else parts[0]
 
 
 def main(args):

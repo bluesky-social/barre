@@ -26,7 +26,9 @@ PASS = "pass"
 # Statuses that are not a verdict on the engine.
 NEUTRAL = {"skip"}
 
-NOT_IMPLEMENTED_RX = re.compile(r"not implemented: ?([\w:.<>-]+(?: [\w:.<>-]+)*?)(?=[\s\"'`)]|$)")
+# The runner's reason for a not_implemented! panic is `not implemented: <name>`
+# (the whole rest of the line is the name).
+NOT_IMPLEMENTED_RX = re.compile(r"not implemented: ?(.+?)\s*$", re.M)
 
 
 def read_ids(path):
