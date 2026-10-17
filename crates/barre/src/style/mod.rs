@@ -420,6 +420,14 @@ pub struct Style {
     /// a different owner size (barre-only, derived; see
     /// [`Style::has_owner_relative_box`]).
     percent_inputs: u8,
+    /// barre-only, derived (see [`Style::refresh_axis_sums`]):
+    /// `compute_margin_for_axis` for the row and column axes, valid when
+    /// no margin is a percentage (it then needs no reference length).
+    margin_axis_sum: [f32; 2],
+    /// barre-only, derived: `compute_padding_and_border_for_axis` per
+    /// direction and axis (row, column), valid when no padding or border is
+    /// a percentage.
+    padding_border_axis_sum: [[f32; 2]; 3],
     flex: f32,
     flex_grow: f32,
     flex_shrink: f32,
@@ -494,6 +502,8 @@ impl Style {
             box_sizing: BoxSizing::BorderBox,
             undefined_edges: EDGES_MARGIN | EDGES_POSITION | EDGES_PADDING | EDGES_BORDER,
             percent_inputs: 0,
+            margin_axis_sum: [0.0; 2],
+            padding_border_axis_sum: [[0.0; 2]; 3],
             flex: f32::NAN,
             flex_grow: f32::NAN,
             flex_shrink: f32::NAN,
@@ -561,6 +571,23 @@ impl Style {
         }
     }
 
+    /// barre-only: fills `margin_axis_sum` and `padding_border_axis_sum`
+    /// from the per-edge functions, so the fast paths return exactly what
+    /// those compute (same operations, same order). With no percentage the
+    /// reference length does not enter them, so 0 stands in for it.
+    fn refresh_axis_sums(&mut self) {
+        for (i, axis) in [FlexDirection::Row, FlexDirection::Column]
+            .into_iter()
+            .enumerate()
+        {
+            self.margin_axis_sum[i] = self.compute_margin_for_axis_slow(axis, 0.0);
+            for direction in [Direction::Inherit, Direction::LTR, Direction::RTL] {
+                self.padding_border_axis_sum[direction as usize][i] =
+                    self.compute_padding_and_border_for_axis_slow(axis, direction, 0.0);
+            }
+        }
+    }
+
     /// barre-only: whether any of the inputs `calculate_layout_internal`'s
     /// cache key resolves against the owner size (margin, padding, border,
     /// min/max dimensions) is a percentage. When none is, they resolve to the
@@ -588,6 +615,7 @@ impl Style {
         self.margin.set(edge, value);
         self.set_undefined_edges(EDGES_MARGIN, self.margin.all_undefined());
         self.set_percent_input(PERCENT_MARGIN, self.margin.any_percent());
+        self.refresh_axis_sums();
     }
     #[inline]
     pub fn position(&self, edge: Edge) -> StyleLength {
@@ -607,6 +635,7 @@ impl Style {
         self.padding.set(edge, value);
         self.set_undefined_edges(EDGES_PADDING, self.padding.all_undefined());
         self.set_percent_input(PERCENT_PADDING, self.padding.any_percent());
+        self.refresh_axis_sums();
     }
     #[inline]
     pub fn border(&self, edge: Edge) -> StyleLength {
@@ -617,6 +646,7 @@ impl Style {
         self.border.set(edge, value);
         self.set_undefined_edges(EDGES_BORDER, self.border.all_undefined());
         self.set_percent_input(PERCENT_BORDER, self.border.any_percent());
+        self.refresh_axis_sums();
     }
     #[inline]
     pub fn gap(&self, gutter: Gutter) -> StyleLength {
@@ -1069,10 +1099,58 @@ impl Style {
     }
 
     /// `Style::computeMarginForAxis`. The total margin for a given axis does
-    /// not depend on the direction, so LTR is used.
+    /// not depend on the direction, so LTR is used. Without a percentage
+    /// margin it is the sum precomputed when a margin was set (barre-only,
+    /// the same value).
+    #[inline]
     pub fn compute_margin_for_axis(&self, axis: FlexDirection, width_size: f32) -> f32 {
+        if self.percent_inputs & PERCENT_MARGIN == 0 {
+            let sum = self.margin_axis_sum[!is_row(axis) as usize];
+            debug_assert_eq!(
+                sum.to_bits(),
+                self.compute_margin_for_axis_slow(axis, width_size)
+                    .to_bits()
+            );
+            return sum;
+        }
+        self.compute_margin_for_axis_slow(axis, width_size)
+    }
+
+    fn compute_margin_for_axis_slow(&self, axis: FlexDirection, width_size: f32) -> f32 {
         self.compute_inline_start_margin(axis, Direction::LTR, width_size)
             + self.compute_inline_end_margin(axis, Direction::LTR, width_size)
+    }
+
+    /// `paddingAndBorderForAxis` (`yoga/algorithm/BoundAxis.h`, which sums
+    /// these two `Style` calls). Without a percentage padding or border it
+    /// is the sum precomputed when one was set (barre-only, the same value).
+    #[inline]
+    pub fn compute_padding_and_border_for_axis(
+        &self,
+        axis: FlexDirection,
+        direction: Direction,
+        width_size: f32,
+    ) -> f32 {
+        if self.percent_inputs & (PERCENT_PADDING | PERCENT_BORDER) == 0 {
+            let sum = self.padding_border_axis_sum[direction as usize][!is_row(axis) as usize];
+            debug_assert_eq!(
+                sum.to_bits(),
+                self.compute_padding_and_border_for_axis_slow(axis, direction, width_size)
+                    .to_bits()
+            );
+            return sum;
+        }
+        self.compute_padding_and_border_for_axis_slow(axis, direction, width_size)
+    }
+
+    fn compute_padding_and_border_for_axis_slow(
+        &self,
+        axis: FlexDirection,
+        direction: Direction,
+        width_size: f32,
+    ) -> f32 {
+        self.compute_inline_start_padding_and_border(axis, direction, width_size)
+            + self.compute_inline_end_padding_and_border(axis, direction, width_size)
     }
 
     /// `Style::computeGapForAxis`.
