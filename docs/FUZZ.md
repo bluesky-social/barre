@@ -115,8 +115,9 @@ builds and runs it (exit 1 means relayout != fresh).
 ## Known failure classes
 
 At `stack` 8d12c13, default knobs, seeds 1..10000 (30000 (seed, mode) pairs):
-barre fails 2358 (7.9%); Yoga fails 19315 (64%) of the same pairs. By class,
-with the size of the first difference:
+barre fails 2358 (7.9%); Yoga fails 19315 (64%) of the same pairs. (After
+branch `fix-barre-only-relayout`: 2290; 70 pairs fixed, 2 new, both shared
+with Yoga.) By class, with the size of the first difference:
 
 | class | pairs | difference | Yoga fails too |
 |---|---|---|---|
@@ -146,11 +147,66 @@ Mechanisms behind them, from the minimised cases in `fuzzer/cases/`
   `aspectRatio`, 468 a percentage.
 - **Runaway fresh layouts** (`runaway-fresh`; Yoga too): the fresh layout is
   the wrong one (20971524 tall); 13 failures have a value above 1e5.
-- **barre-only** (Yoga passes at that scale): 23 pairs. Mostly mode 2, a
-  `basis` on a column inside a row (`barre-only-basis-mode2`,
-  `barre-only-basis-mode0`), plus `barre-only-scale1`. These look like the
-  flex-basis anchor (T-0006) and the cache keys (T-0010). With `--wide`: 35
-  pairs of 30000, including `alignSelf: baseline` (`barre-only-baseline`).
+- **barre-only** (Yoga passes at that scale): 23 pairs at `stack` 499417a,
+  14 after branch `fix-barre-only-relayout` (35 → 22 with `--wide`, 21 → 14
+  with `--steps 20`, 51 → 31 with `--siblings 10 --depth 6 --kids 3 --steps
+  20 --wide`). Traced and fixed there, each with a test in
+  `conformance/tests/YGRelayoutFreshFuzzTest.cpp`:
+  - `barre-only-basis-mode2`: a container hit an earlier layout's cache
+    entry, then hit it again in the same layout. The entry kept its old
+    generation, so the second hit was taken for an earlier-layout hit again
+    and replayed the flex-basis anchor a second time, after a run had
+    rewritten the bases since. Fix: restamp the entry on the first hit.
+  - `slots-barre-only`: T-0006 counted every call with a `MaxContent` main
+    axis as an anchor, but a caller can pass a definite size with that mode,
+    and then `compute_flex_basis_for_child`'s resolved branch keeps the
+    bases. Fix: an anchor needs an undefined available main size. (This
+    fails with 8 cache slots only by accident of which entries survive.)
+  - `barre-only-baseline`: the yoga#1932 fix lays a baseline child out
+    during its owner's *measure* pass; an ancestor's layout pass answered
+    from an earlier layout's cache then left the subtree as that measure
+    left it. Fix: such a baseline layout invalidates earlier layouts'
+    `cached_layout` entries up the owner chain.
+  - `barre-only-basis-mode0`: the `singleFlexChild` zero basis written by a
+    `StretchFit`-main call answered from an earlier layout's cache (a
+    residual T-0006 had listed). Fix: make that write at the hit, or after
+    the pending anchor replay.
+  - Found while fixing the second: a fixed-size measurement (the
+    `measure_node_with_fixed_size` shortcut) computes no basis, so it must
+    not be a node's anchor even as its first call (seed 5580; guarded by
+    `fixed_size_measurement_is_not_an_anchor`).
+
+  What is left (default knobs, 14 pairs), all traced:
+  - **Superseded anchor** (8 pairs: seeds 259, 2422, 5766, 6496, 6723, 7046,
+    7441, 8266, all mode 2; plus 9620 with the `--siblings` knobs, which the
+    second fix above exposed). Two anchor calls of a container are answered
+    from an earlier layout's cache before its next run; only the later one
+    is replayed. The earlier one made the children's first calls of the
+    layout in a fresh layout (their own anchors), so a grandchild keeps a
+    resolved basis where the fresh layout measured its content. Failing
+    test: `YGRelayoutFreshResidualTest.superseded_anchor_not_replayed`. It
+    needs a design decision: replaying the superseded anchor at the hit
+    (tried: fixes 38 more pairs at default knobs, barre-only 14 → 6, `./conf`
+    green, no new failures) breaks T-0006's guarantee that replays run only
+    right before a real run (it can clone children and do work Yoga skips);
+    keeping both anchors pending costs another 28-byte `FlexBasisAnchor` per
+    node.
+  - **Skipped non-anchor call** (seed 254): a call of a container with a
+    definite main size, answered from an earlier layout's cache, made anchor
+    calls into its children in the fresh layout; nothing replays them. This
+    is T-0006's "history more than one level deep". Failing test:
+    `YGRelayoutFreshResidualTest.skipped_non_anchor_call_made_child_anchors`.
+  - Margin in compatible-measurement reuse (seed 7636, 3 pairs): the
+    Yoga-shared mechanism below; barre-only only because the leaf's cache
+    history differs from Yoga's.
+  - Rounding of a cached subtree (seed 4337 = `barre-only-scale1`, 2 pairs):
+    the Yoga-shared mechanism below; barre-only because barre's *fresh*
+    layout at the first size differs from Yoga's (with the `minh=90` removed
+    they agree, so presumably the yoga#2035 divergence), which moves the
+    cached subtree in barre and not in Yoga.
+
+  Also new at default knobs: seed 2465 (modes 0, 1), Yoga fails it too; it
+  is margin-reuse, reached through a different replay history.
 - **Cache-slot occupancy.** The measurement cache is a ring of 8 entries and
   the lookup scans only `[0, next_index)`, so after a wrap a relayout sees a
   different set of entries than a fresh layout. Against `--slots 32`: 7 pairs
@@ -168,7 +224,12 @@ Mechanisms behind them, from the minimised cases in `fuzzer/cases/`
   Minimised with `--slots-pass 32`, they need many sizes (10 of 20) and are
   mostly the margin-reuse mechanism (`slots-margin-reuse`, 3 nodes, Yoga
   too); 2 of the first set's 30 and 13 of the last set's 30 are barre-only
-  (`slots-barre-only`).
+  (`slots-barre-only`). Traced, `slots-barre-only` is not a slot mechanism:
+  it is the `MaxContent`-anchor rule (fixed, see barre-only below); the slot
+  count only decides which earlier-layout entries survive to be hit. The
+  `[0, next_index)` scan after a wrap is Yoga's lookup, ported as is. With
+  `--steps 20` and 10000 seeds, 8-slot-only pairs go 64 → 56 and
+  32-slot-only 298 → 280 with that branch.
 - **NaN/infinite fresh layouts** (barre-only, `--wide`): a column with only an
   absolute child and `justifyContent: space-around` gets height inf
   (`nonfinite-space-around`; Yoga: 1), and a row with `gap` gets an inf width
