@@ -83,19 +83,19 @@ whatever it picks up.
    - cache-slot occupancy (not yet isolated);
    - a run that hung at 0% CPU (probably a full stdout pipe; check).
 4. **Small things:**
-   - Write a verification convention for perf tickets into
-     `docs/HARNESS.md`: a numeric gate check, since the verifier judges
-     correctness, not targets.
-   - `docs/PLAN.md` still says "Locally only for now".
    - Once no agent commits to `main`, switch the main checkout to `stack`
      (kahvi's setup).
+   - (Done: the perf-ticket verification convention is in `docs/HARNESS.md`,
+     and `docs/PLAN.md` no longer says "Locally only for now".)
 
 ## Open questions for Samuel
 
 - **LICENSE:** there's no LICENSE file; `Cargo.toml` says MIT. Who should be
   the copyright holder?
-- **kahvi:** port back two stacker bugs found here, missing `pipefail` in CI
-  and `orch run` exiting before closing a red PR?
+- **kahvi:** port back three stacker bugs found here? Missing `pipefail` in
+  CI; `orch run` exiting before it has judged or closed a PR; and a ledger
+  race where the orphan sweep marks a layer `closed` while its PR is still
+  being opened (the push then records `pr` without resetting the status).
 
 ## Context from social-app measurements (2026-10-17/18)
 
