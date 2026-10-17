@@ -48,7 +48,13 @@ macro_rules! enum_property {
         pub extern "C" fn $set(n: YGNodeRef, value: u32) {
             let value = from_raw(value, $ty::from_raw);
             update_style(n, |s| {
-                set_if_changed(s, value, |s| s.$getter(), |a, b| a == b, |s, v| s.$setter(v))
+                set_if_changed(
+                    s,
+                    value,
+                    |s| s.$getter(),
+                    |a, b| a == b,
+                    |s, v| s.$setter(v),
+                )
             });
         }
 
@@ -59,7 +65,13 @@ macro_rules! enum_property {
     };
 }
 
-enum_property!(YGNodeStyleSetDirection, YGNodeStyleGetDirection, Direction, direction, set_direction);
+enum_property!(
+    YGNodeStyleSetDirection,
+    YGNodeStyleGetDirection,
+    Direction,
+    direction,
+    set_direction
+);
 enum_property!(
     YGNodeStyleSetFlexDirection,
     YGNodeStyleGetFlexDirection,
@@ -102,7 +114,13 @@ enum_property!(
     align_items,
     set_align_items
 );
-enum_property!(YGNodeStyleSetAlignSelf, YGNodeStyleGetAlignSelf, Align, align_self, set_align_self);
+enum_property!(
+    YGNodeStyleSetAlignSelf,
+    YGNodeStyleGetAlignSelf,
+    Align,
+    align_self,
+    set_align_self
+);
 enum_property!(
     YGNodeStyleSetPositionType,
     YGNodeStyleGetPositionType,
@@ -110,8 +128,20 @@ enum_property!(
     position_type,
     set_position_type
 );
-enum_property!(YGNodeStyleSetFlexWrap, YGNodeStyleGetFlexWrap, Wrap, flex_wrap, set_flex_wrap);
-enum_property!(YGNodeStyleSetOverflow, YGNodeStyleGetOverflow, Overflow, overflow, set_overflow);
+enum_property!(
+    YGNodeStyleSetFlexWrap,
+    YGNodeStyleGetFlexWrap,
+    Wrap,
+    flex_wrap,
+    set_flex_wrap
+);
+enum_property!(
+    YGNodeStyleSetOverflow,
+    YGNodeStyleGetOverflow,
+    Overflow,
+    overflow,
+    set_overflow
+);
 enum_property!(
     YGNodeStyleSetBoxSizing,
     YGNodeStyleGetBoxSizing,
@@ -125,7 +155,13 @@ pub extern "C" fn YGNodeStyleSetDisplay(n: YGNodeRef, display: u32) {
     let display = from_raw(display, Display::from_raw);
     let was_contents = node(n).style().display() == Display::Contents;
     update_style(n, |s| {
-        set_if_changed(s, display, |s| s.display(), |a, b| a == b, |s, v| s.set_display(v))
+        set_if_changed(
+            s,
+            display,
+            |s| s.display(),
+            |a, b| a == b,
+            |s, v| s.set_display(v),
+        )
     });
     tree::display_changed(node(n), was_contents);
 }
@@ -200,7 +236,13 @@ pub extern "C" fn YGNodeStyleGetAspectRatio(n: YGNodeConstRef) -> f32 {
 
 fn set_flex_basis(n: YGNodeRef, value: StyleSizeLength) {
     update_style(n, |s| {
-        set_if_changed(s, value, |s| s.flex_basis(), |a, b| a == b, |s, v| s.set_flex_basis(v))
+        set_if_changed(
+            s,
+            value,
+            |s| s.flex_basis(),
+            |a, b| a == b,
+            |s, v| s.set_flex_basis(v),
+        )
     });
 }
 
@@ -286,7 +328,12 @@ pub extern "C" fn YGNodeStyleSetPosition(n: YGNodeRef, edge: u32, points: f32) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn YGNodeStyleSetPositionPercent(n: YGNodeRef, edge: u32, percent: f32) {
-    set_edge(n, EdgeProperty::Position, edge, StyleLength::percent(percent));
+    set_edge(
+        n,
+        EdgeProperty::Position,
+        edge,
+        StyleLength::percent(percent),
+    );
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn YGNodeStyleSetPositionAuto(n: YGNodeRef, edge: u32) {
@@ -320,7 +367,12 @@ pub extern "C" fn YGNodeStyleSetPadding(n: YGNodeRef, edge: u32, points: f32) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn YGNodeStyleSetPaddingPercent(n: YGNodeRef, edge: u32, percent: f32) {
-    set_edge(n, EdgeProperty::Padding, edge, StyleLength::percent(percent));
+    set_edge(
+        n,
+        EdgeProperty::Padding,
+        edge,
+        StyleLength::percent(percent),
+    );
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn YGNodeStyleGetPadding(n: YGNodeConstRef, edge: u32) -> YGValue {
@@ -333,9 +385,7 @@ pub extern "C" fn YGNodeStyleSetBorder(n: YGNodeRef, edge: u32, border: f32) {
 }
 #[unsafe(no_mangle)]
 pub extern "C" fn YGNodeStyleGetBorder(n: YGNodeConstRef, edge: u32) -> f32 {
-    let border = node(n)
-        .style()
-        .border(from_raw(edge, Edge::from_raw));
+    let border = node(n).style().border(from_raw(edge, Edge::from_raw));
     if border.is_undefined() || border.is_auto() {
         return f32::NAN;
     }
@@ -345,7 +395,13 @@ pub extern "C" fn YGNodeStyleGetBorder(n: YGNodeConstRef, edge: u32) -> f32 {
 fn set_gap(n: YGNodeRef, gutter: u32, value: StyleLength) {
     let gutter = from_raw(gutter, Gutter::from_raw);
     update_style(n, |s| {
-        set_if_changed(s, value, |s| s.gap(gutter), |a, b| a == b, |s, v| s.set_gap(gutter, v))
+        set_if_changed(
+            s,
+            value,
+            |s| s.gap(gutter),
+            |a, b| a == b,
+            |s, v| s.set_gap(gutter, v),
+        )
     });
 }
 
@@ -494,10 +550,8 @@ fn update_grid(n: YGNodeRef, update: impl FnOnce(&mut Option<Box<GridStyle>>) ->
     }
 }
 
-fn grid(n: YGNodeConstRef) -> &'static GridStyle {
-    // The node outlives this call; the reference does not escape it.
-    let node: &'static barre::Node = node(n);
-    node.grid().unwrap_or(&barre::style::DEFAULT_GRID_STYLE)
+fn grid<'a>(n: YGNodeConstRef) -> &'a GridStyle {
+    node(n).grid().unwrap_or(&barre::style::DEFAULT_GRID_STYLE)
 }
 
 /// `updateStyle` for a grid line: compares with the current value (the
@@ -599,7 +653,11 @@ fn style_size_length_from_type_and_value(
 
 /// Grid track list properties, which (unlike other properties) always mark
 /// the node dirty.
-fn update_tracks(n: YGNodeRef, list: fn(&mut GridStyle) -> &mut Vec<GridTrackSize>, f: impl FnOnce(&mut Vec<GridTrackSize>)) {
+fn update_tracks(
+    n: YGNodeRef,
+    list: fn(&mut GridStyle) -> &mut Vec<GridTrackSize>,
+    f: impl FnOnce(&mut Vec<GridTrackSize>),
+) {
     update_grid(n, |storage| {
         f(list(storage.get_or_insert_with(Default::default)));
         true
@@ -610,9 +668,11 @@ macro_rules! grid_tracks_property {
     ($field:ident, $set_count:ident, $set:ident, $set_minmax:ident) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn $set_count(n: YGNodeRef, count: usize) {
-            update_tracks(n, |g| &mut g.$field, |tracks| {
-                tracks.resize(count, GridTrackSize::default())
-            });
+            update_tracks(
+                n,
+                |g| &mut g.$field,
+                |tracks| tracks.resize(count, GridTrackSize::default()),
+            );
         }
         #[unsafe(no_mangle)]
         pub extern "C-unwind" fn $set(n: YGNodeRef, index: usize, kind: u32, value: f32) {
@@ -634,9 +694,11 @@ macro_rules! grid_tracks_property {
             guard(|| {
                 let min = style_size_length_from_type_and_value(min_kind, min_value)?;
                 let max = style_size_length_from_type_and_value(max_kind, max_value)?;
-                update_tracks(n, |g| &mut g.$field, |tracks| {
-                    tracks[index] = GridTrackSize::minmax(min, max)
-                });
+                update_tracks(
+                    n,
+                    |g| &mut g.$field,
+                    |tracks| tracks[index] = GridTrackSize::minmax(min, max),
+                );
                 Ok(())
             })
         }

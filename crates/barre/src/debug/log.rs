@@ -6,7 +6,8 @@ use crate::node::Node;
 
 /// The function behind a [`Logger`]. `data` is the logger's opaque payload
 /// (the C ABI stores the embedder's `YGLogger` there).
-pub type LogFn = fn(data: usize, config: &Config, node: Option<&Node>, level: LogLevel, message: &str);
+pub type LogFn =
+    fn(data: usize, config: &Config, node: Option<&Node>, level: LogLevel, message: &str);
 
 /// A config's logger (`YGConfigSetLogger`).
 #[derive(Copy, Clone, Debug)]

@@ -149,12 +149,16 @@ pub extern "C" fn YGNodeGetChildCount(n: YGNodeConstRef) -> usize {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn YGNodeGetOwner(n: YGNodeRef) -> YGNodeRef {
-    node(n).owner_ptr().map_or(std::ptr::null_mut(), NodePtr::as_ptr)
+    node(n)
+        .owner_ptr()
+        .map_or(std::ptr::null_mut(), NodePtr::as_ptr)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn YGNodeGetParent(n: YGNodeRef) -> YGNodeRef {
-    node(n).owner_ptr().map_or(std::ptr::null_mut(), NodePtr::as_ptr)
+    node(n)
+        .owner_ptr()
+        .map_or(std::ptr::null_mut(), NodePtr::as_ptr)
 }
 
 #[unsafe(no_mangle)]

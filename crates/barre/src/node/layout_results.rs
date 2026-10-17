@@ -132,15 +132,21 @@ impl LayoutResults {
     pub fn copy_from(&self, other: &LayoutResults) {
         self.computed_flex_basis_generation
             .set(other.computed_flex_basis_generation.get());
-        self.computed_flex_basis.set(other.computed_flex_basis.get());
+        self.computed_flex_basis
+            .set(other.computed_flex_basis.get());
         self.computed_auto_min_main_size
             .set(other.computed_auto_min_main_size.get());
         self.generation_count.set(other.generation_count.get());
         self.config_version.set(other.config_version.get());
-        self.last_owner_direction.set(other.last_owner_direction.get());
+        self.last_owner_direction
+            .set(other.last_owner_direction.get());
         self.next_cached_measurements_index
             .set(other.next_cached_measurements_index.get());
-        for (a, b) in self.cached_measurements.iter().zip(&other.cached_measurements) {
+        for (a, b) in self
+            .cached_measurements
+            .iter()
+            .zip(&other.cached_measurements)
+        {
             a.set(b.get());
         }
         self.cached_layout.set(other.cached_layout.get());
@@ -238,3 +244,7 @@ fn copy_cells<const N: usize>(dst: &[Cell<f32>; N], src: &[Cell<f32>; N]) {
         a.set(b.get());
     }
 }
+
+// A host may store `LayoutResults` as raw bytes and copy them (docs/API.md):
+// it must stay plain data.
+const _: () = assert!(!std::mem::needs_drop::<LayoutResults>());

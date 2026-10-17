@@ -105,7 +105,8 @@ pub fn round_layout_results_to_pixel_grid<'a, N: LayoutNode<'a>>(
         // result is close to whole number we want to check both floor and
         // ceil numbers.
         let scaled_node_width = node_width * point_scale_factor;
-        let has_fractional_width = !inexact_equals_f64(scaled_node_width.round(), scaled_node_width);
+        let has_fractional_width =
+            !inexact_equals_f64(scaled_node_width.round(), scaled_node_width);
         let scaled_node_height = node_height * point_scale_factor;
         let has_fractional_height =
             !inexact_equals_f64(scaled_node_height.round(), scaled_node_height);

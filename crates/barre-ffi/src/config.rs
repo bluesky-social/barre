@@ -7,7 +7,10 @@ use barre::debug::assert_fatal::assert_fatal_with_config;
 use barre::debug::log::Logger;
 use barre::{Config, Errata, ExperimentalFeature};
 
-use crate::{YGConfigConstRef, YGConfigRef, YGLogger, c_logger_trampoline, config, config_mut, from_raw, guard};
+use crate::{
+    YGConfigConstRef, YGConfigRef, YGLogger, c_logger_trampoline, config, config_mut, from_raw,
+    guard,
+};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn YGConfigNew() -> YGConfigRef {
@@ -84,7 +87,11 @@ pub extern "C" fn YGConfigGetContext(c: YGConfigConstRef) -> *mut c_void {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn YGConfigSetExperimentalFeatureEnabled(c: YGConfigRef, feature: u32, enabled: bool) {
+pub extern "C" fn YGConfigSetExperimentalFeatureEnabled(
+    c: YGConfigRef,
+    feature: u32,
+    enabled: bool,
+) {
     config_mut(c).set_experimental_feature_enabled(
         from_raw(feature, ExperimentalFeature::from_raw),
         enabled,

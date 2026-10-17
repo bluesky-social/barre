@@ -21,8 +21,8 @@
 //! in use is undefined behaviour in Yoga as well.
 
 pub mod children;
-pub mod layout_results;
 pub mod layout_node;
+pub mod layout_results;
 pub mod layoutable_children;
 pub mod tree;
 
@@ -38,8 +38,8 @@ use crate::numeric::{is_undefined, max_or_defined};
 use crate::style::{GridStyle, Style};
 
 use self::children::Children;
-pub use self::layout_results::{CachedMeasurement, LayoutResults};
 pub use self::layout_node::{LayoutNode, NodeExt};
+pub use self::layout_results::{CachedMeasurement, LayoutResults};
 pub use self::layoutable_children::LayoutableChildren;
 
 /// `YGSize`.
@@ -61,7 +61,8 @@ pub type MeasureFunc = unsafe extern "C-unwind" fn(
 ) -> Size;
 
 /// `YGBaselineFunc`.
-pub type BaselineFunc = unsafe extern "C-unwind" fn(node: *const Node, width: f32, height: f32) -> f32;
+pub type BaselineFunc =
+    unsafe extern "C-unwind" fn(node: *const Node, width: f32, height: f32) -> f32;
 
 /// `YGDirtiedFunc`.
 pub type DirtiedFunc = unsafe extern "C-unwind" fn(node: *const Node);
@@ -725,7 +726,8 @@ impl Node {
         )?;
         let fresh = Node::new(self.config());
         self.has_new_layout.set(fresh.has_new_layout.get());
-        self.is_reference_baseline.set(fresh.is_reference_baseline.get());
+        self.is_reference_baseline
+            .set(fresh.is_reference_baseline.get());
         self.is_dirty.set(fresh.is_dirty.get());
         self.always_forms_containing_block
             .set(fresh.always_forms_containing_block.get());
@@ -748,4 +750,3 @@ impl Node {
         Ok(())
     }
 }
-

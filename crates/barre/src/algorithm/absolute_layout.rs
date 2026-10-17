@@ -16,7 +16,9 @@ use crate::algorithm::calculate_layout::{LayoutData, cleanup_contents_nodes_recu
 use crate::algorithm::flex_direction::{is_row, resolve_cross_direction, resolve_direction};
 use crate::algorithm::sizing_mode::SizingMode;
 use crate::algorithm::trailing_position::{needs_trailing_position, set_child_trailing_position};
-use crate::enums::{Dimension, Direction, Display, Errata, FlexDirection, PhysicalEdge, PositionType};
+use crate::enums::{
+    Dimension, Direction, Display, Errata, FlexDirection, PhysicalEdge, PositionType,
+};
 use crate::node::{LayoutNode, NodeExt};
 
 /// `layoutAbsoluteChild`: sizes `child` (an absolutely positioned descendant
@@ -66,7 +68,9 @@ pub fn layout_absolute_descendants<'a, N: LayoutNode<'a>>(
             let containing_block_width = if absolute_errata {
                 containing_node_available_inner_width
             } else {
-                containing_node.layout().measured_dimension(Dimension::Width)
+                containing_node
+                    .layout()
+                    .measured_dimension(Dimension::Width)
                     - containing_node
                         .style()
                         .compute_border_for_axis(FlexDirection::Row)
@@ -74,7 +78,9 @@ pub fn layout_absolute_descendants<'a, N: LayoutNode<'a>>(
             let containing_block_height = if absolute_errata {
                 containing_node_available_inner_height
             } else {
-                containing_node.layout().measured_dimension(Dimension::Height)
+                containing_node
+                    .layout()
+                    .measured_dimension(Dimension::Height)
                     - containing_node
                         .style()
                         .compute_border_for_axis(FlexDirection::Column)

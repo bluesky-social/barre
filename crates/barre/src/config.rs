@@ -8,8 +8,11 @@ use crate::node::{Node, NodePtr};
 
 /// `YGCloneNodeFunc`: called when layout needs a private copy of a shared
 /// child. Returning null falls back to [`crate::node::tree::node_clone`].
-pub type CloneNodeFunc =
-    unsafe extern "C-unwind" fn(old_node: *const Node, owner: *const Node, child_index: usize) -> *mut Node;
+pub type CloneNodeFunc = unsafe extern "C-unwind" fn(
+    old_node: *const Node,
+    owner: *const Node,
+    child_index: usize,
+) -> *mut Node;
 
 /// `yoga::Config`.
 ///
@@ -83,7 +86,11 @@ impl Config {
     }
 
     /// `Config::setExperimentalFeatureEnabled`.
-    pub fn set_experimental_feature_enabled(&mut self, feature: ExperimentalFeature, enabled: bool) {
+    pub fn set_experimental_feature_enabled(
+        &mut self,
+        feature: ExperimentalFeature,
+        enabled: bool,
+    ) {
         if self.is_experimental_feature_enabled(feature) != enabled {
             let bit = 1u32 << (feature as u32);
             if enabled {

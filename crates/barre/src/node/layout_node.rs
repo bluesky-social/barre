@@ -181,7 +181,13 @@ impl<'a> LayoutNode<'a> for &'a Node {
         available_height: f32,
         height_mode: MeasureMode,
     ) -> Size {
-        Node::measure(self, available_width, width_mode, available_height, height_mode)
+        Node::measure(
+            self,
+            available_width,
+            width_mode,
+            available_height,
+            height_mode,
+        )
     }
     #[inline]
     fn has_min_content_measure_func(self) -> bool {
@@ -195,7 +201,13 @@ impl<'a> LayoutNode<'a> for &'a Node {
         available_height: f32,
         height_mode: MeasureMode,
     ) -> Size {
-        Node::measure_min_content(self, available_width, width_mode, available_height, height_mode)
+        Node::measure_min_content(
+            self,
+            available_width,
+            width_mode,
+            available_height,
+            height_mode,
+        )
     }
     #[inline]
     fn min_content_width(self) -> f32 {
@@ -273,7 +285,9 @@ pub trait NodeExt<'a>: LayoutNode<'a> {
         reference_length: f32,
         owner_width: f32,
     ) -> f32 {
-        let value = self.processed_dimension(dimension).resolve(reference_length);
+        let value = self
+            .processed_dimension(dimension)
+            .resolve(reference_length);
         let style = self.style();
         if style.box_sizing() == BoxSizing::BorderBox {
             return value;
@@ -398,12 +412,20 @@ pub trait NodeExt<'a>: LayoutNode<'a> {
         let relative_position_main = self.relative_position(
             main_axis,
             direction_respecting_root,
-            if is_row(main_axis) { owner_width } else { owner_height },
+            if is_row(main_axis) {
+                owner_width
+            } else {
+                owner_height
+            },
         );
         let relative_position_cross = self.relative_position(
             cross_axis,
             direction_respecting_root,
-            if is_row(main_axis) { owner_height } else { owner_width },
+            if is_row(main_axis) {
+                owner_height
+            } else {
+                owner_width
+            },
         );
 
         let main_axis_leading_edge = inline_start_edge(main_axis, direction);

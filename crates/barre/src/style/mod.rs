@@ -398,14 +398,29 @@ impl Style {
     }
 
     enum_property!(direction, set_direction, direction, Direction);
-    enum_property!(flex_direction, set_flex_direction, flex_direction, FlexDirection);
-    enum_property!(justify_content, set_justify_content, justify_content, Justify);
+    enum_property!(
+        flex_direction,
+        set_flex_direction,
+        flex_direction,
+        FlexDirection
+    );
+    enum_property!(
+        justify_content,
+        set_justify_content,
+        justify_content,
+        Justify
+    );
     enum_property!(justify_items, set_justify_items, justify_items, Justify);
     enum_property!(justify_self, set_justify_self, justify_self, Justify);
     enum_property!(align_content, set_align_content, align_content, Align);
     enum_property!(align_items, set_align_items, align_items, Align);
     enum_property!(align_self, set_align_self, align_self, Align);
-    enum_property!(position_type, set_position_type, position_type, PositionType);
+    enum_property!(
+        position_type,
+        set_position_type,
+        position_type,
+        PositionType
+    );
     enum_property!(flex_wrap, set_flex_wrap, flex_wrap, Wrap);
     enum_property!(overflow, set_overflow, overflow, Overflow);
     enum_property!(display, set_display, display, Display);
@@ -517,7 +532,12 @@ impl Style {
         if length.is_undefined() {
             return f32::NAN;
         }
-        self.add_box_sizing(direction, axis, length.resolve(reference_length), owner_width)
+        self.add_box_sizing(
+            direction,
+            axis,
+            length.resolve(reference_length),
+            owner_width,
+        )
     }
 
     /// `Style::resolvedMaxDimension`.
@@ -532,7 +552,12 @@ impl Style {
         if length.is_undefined() {
             return f32::NAN;
         }
-        self.add_box_sizing(direction, axis, length.resolve(reference_length), owner_width)
+        self.add_box_sizing(
+            direction,
+            axis,
+            length.resolve(reference_length),
+            owner_width,
+        )
     }
 
     /// Shared tail of `resolvedMin/MaxDimension` and
@@ -578,12 +603,18 @@ impl Style {
     }
 
     /// `Style::isFlexStartPositionDefined`.
-    pub fn is_flex_start_position_defined(&self, axis: FlexDirection, direction: Direction) -> bool {
-        self.compute_position(flex_start_edge(axis), direction).is_defined()
+    pub fn is_flex_start_position_defined(
+        &self,
+        axis: FlexDirection,
+        direction: Direction,
+    ) -> bool {
+        self.compute_position(flex_start_edge(axis), direction)
+            .is_defined()
     }
     /// `Style::isFlexStartPositionAuto`.
     pub fn is_flex_start_position_auto(&self, axis: FlexDirection, direction: Direction) -> bool {
-        self.compute_position(flex_start_edge(axis), direction).is_auto()
+        self.compute_position(flex_start_edge(axis), direction)
+            .is_auto()
     }
     /// `Style::isInlineStartPositionDefined`.
     pub fn is_inline_start_position_defined(
@@ -601,11 +632,13 @@ impl Style {
     }
     /// `Style::isFlexEndPositionDefined`.
     pub fn is_flex_end_position_defined(&self, axis: FlexDirection, direction: Direction) -> bool {
-        self.compute_position(flex_end_edge(axis), direction).is_defined()
+        self.compute_position(flex_end_edge(axis), direction)
+            .is_defined()
     }
     /// `Style::isFlexEndPositionAuto`.
     pub fn is_flex_end_position_auto(&self, axis: FlexDirection, direction: Direction) -> bool {
-        self.compute_position(flex_end_edge(axis), direction).is_auto()
+        self.compute_position(flex_end_edge(axis), direction)
+            .is_auto()
     }
     /// `Style::isInlineEndPositionDefined`.
     pub fn is_inline_end_position_defined(
@@ -905,11 +938,13 @@ impl Style {
 
     /// `Style::flexStartMarginIsAuto`.
     pub fn flex_start_margin_is_auto(&self, axis: FlexDirection, direction: Direction) -> bool {
-        self.compute_margin(flex_start_edge(axis), direction).is_auto()
+        self.compute_margin(flex_start_edge(axis), direction)
+            .is_auto()
     }
     /// `Style::flexEndMarginIsAuto`.
     pub fn flex_end_margin_is_auto(&self, axis: FlexDirection, direction: Direction) -> bool {
-        self.compute_margin(flex_end_edge(axis), direction).is_auto()
+        self.compute_margin(flex_end_edge(axis), direction)
+            .is_auto()
     }
     /// `Style::inlineStartMarginIsAuto`.
     pub fn inline_start_margin_is_auto(&self, axis: FlexDirection, direction: Direction) -> bool {

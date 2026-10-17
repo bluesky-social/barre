@@ -3,7 +3,9 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::algorithm::absolute_layout::layout_absolute_descendants;
-use crate::algorithm::align::{fallback_alignment, fallback_justification, resolve_child_alignment};
+use crate::algorithm::align::{
+    fallback_alignment, fallback_justification, resolve_child_alignment,
+};
 use crate::algorithm::baseline::{calculate_baseline, is_baseline_layout};
 use crate::algorithm::bound_axis::{
     bound_axis, bound_axis_within_min_and_max, padding_and_border_for_axis,
@@ -349,21 +351,15 @@ fn compute_flex_basis_for_child<'a, N: LayoutNode<'a>>(
             .compute_margin_for_axis(FlexDirection::Column, owner_width);
 
         if is_row_style_dim_defined {
-            child_width = child.resolved_dimension(
-                direction,
-                Dimension::Width,
-                owner_width,
-                owner_width,
-            ) + margin_row;
+            child_width =
+                child.resolved_dimension(direction, Dimension::Width, owner_width, owner_width)
+                    + margin_row;
             child_width_sizing_mode = SizingMode::StretchFit;
         }
         if is_column_style_dim_defined {
-            child_height = child.resolved_dimension(
-                direction,
-                Dimension::Height,
-                owner_height,
-                owner_width,
-            ) + margin_column;
+            child_height =
+                child.resolved_dimension(direction, Dimension::Height, owner_height, owner_width)
+                    + margin_column;
             child_height_sizing_mode = SizingMode::StretchFit;
         }
 
@@ -541,8 +537,7 @@ fn measure_node_with_measure_func<'a, N: LayoutNode<'a>>(
         max_or_defined(0.0, available_height - padding_and_border_axis_column)
     };
 
-    if width_sizing_mode == SizingMode::StretchFit && height_sizing_mode == SizingMode::StretchFit
-    {
+    if width_sizing_mode == SizingMode::StretchFit && height_sizing_mode == SizingMode::StretchFit {
         // Don't bother sizing the text if both dimensions are already
         // defined.
         node.set_layout_measured_dimension(
@@ -806,8 +801,10 @@ pub fn calculate_available_inner_dimension<'a, N: LayoutNode<'a>>(
         } else {
             max_dimension_optional - padding_and_border
         };
-        available_inner_dim =
-            max_or_defined(min_or_defined(available_inner_dim, max_inner_dim), min_inner_dim);
+        available_inner_dim = max_or_defined(
+            min_or_defined(available_inner_dim, max_inner_dim),
+            min_inner_dim,
+        );
     }
 
     available_inner_dim
@@ -874,7 +871,11 @@ fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
         if perform_layout {
             // Set the initial position (relative to the owner).
             let child_direction = child.resolve_direction(direction);
-            child.set_position(child_direction, available_inner_width, available_inner_height);
+            child.set_position(
+                child_direction,
+                available_inner_width,
+                available_inner_height,
+            );
         }
 
         if child.style().position_type() == PositionType::Absolute {
@@ -986,8 +987,13 @@ fn compute_min_content_main_size<'a, N: LayoutNode<'a>>(
             continue;
         }
 
-        let mut child_main =
-            compute_min_content_main_size(child, node_main_axis, direction, owner_width, owner_height);
+        let mut child_main = compute_min_content_main_size(
+            child,
+            node_main_axis,
+            direction,
+            owner_width,
+            owner_height,
+        );
         child_main += child
             .style()
             .compute_margin_for_axis(node_main_axis, owner_width);
@@ -1012,24 +1018,34 @@ fn compute_min_content_main_size<'a, N: LayoutNode<'a>>(
         };
     }
 
-    main_total += node.style().compute_flex_start_padding_and_border(
-        node_main_axis,
-        direction,
-        owner_width,
-    ) + node
-        .style()
-        .compute_flex_end_padding_and_border(node_main_axis, direction, owner_width);
-    cross_max += node.style().compute_flex_start_padding_and_border(
-        node_cross_axis,
-        direction,
-        owner_width,
-    ) + node
-        .style()
-        .compute_flex_end_padding_and_border(node_cross_axis, direction, owner_width);
+    main_total +=
+        node.style()
+            .compute_flex_start_padding_and_border(node_main_axis, direction, owner_width)
+            + node.style().compute_flex_end_padding_and_border(
+                node_main_axis,
+                direction,
+                owner_width,
+            );
+    cross_max +=
+        node.style()
+            .compute_flex_start_padding_and_border(node_cross_axis, direction, owner_width)
+            + node.style().compute_flex_end_padding_and_border(
+                node_cross_axis,
+                direction,
+                owner_width,
+            );
 
     let node_main_is_row = is_row(node_main_axis);
-    let width_min = if node_main_is_row { main_total } else { cross_max };
-    let height_min = if node_main_is_row { cross_max } else { main_total };
+    let width_min = if node_main_is_row {
+        main_total
+    } else {
+        cross_max
+    };
+    let height_min = if node_main_is_row {
+        cross_max
+    } else {
+        main_total
+    };
     if want_row { width_min } else { height_min }
 }
 
@@ -1057,7 +1073,11 @@ fn compute_auto_min_main_size<'a, N: LayoutNode<'a>>(
         return f32::NAN;
     }
     // Explicit `min-{w,h}` (including `0`) wins over auto.
-    if child.style().min_dimension(dimension(main_axis)).is_defined() {
+    if child
+        .style()
+        .min_dimension(dimension(main_axis))
+        .is_defined()
+    {
         return f32::NAN;
     }
     // A flex item whose own `overflow` is not `visible` gets auto-min = 0.
@@ -1531,17 +1551,16 @@ fn resolve_flexible_length<'a, N: LayoutNode<'a>>(
     // up front so the bounding helpers below can floor shrunk values.
     if !node.has_errata(Errata::MIN_SIZE_UNDEFINED_INSTEAD_OF_AUTO) {
         for &current_line_child in &flex_line.items_in_flow {
-            current_line_child
-                .layout()
-                .computed_auto_min_main_size
-                .set(compute_auto_min_main_size(
+            current_line_child.layout().computed_auto_min_main_size.set(
+                compute_auto_min_main_size(
                     current_line_child,
                     main_axis,
                     direction,
                     main_axis_owner_size,
                     available_inner_width,
                     available_inner_height,
-                ));
+                ),
+            );
         }
     } else {
         for &current_line_child in &flex_line.items_in_flow {
@@ -1614,8 +1633,7 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
     let gap = style.compute_gap_for_axis(main_axis, available_inner_main_dim);
     // If we are using "at most" rules in the main axis, make sure that
     // remainingFreeSpace is 0 when min main dimension is not given
-    if sizing_mode_main_dim == SizingMode::FitContent
-        && flex_line.layout.remaining_free_space > 0.0
+    if sizing_mode_main_dim == SizingMode::FitContent && flex_line.layout.remaining_free_space > 0.0
     {
         if style.min_dimension(dimension(main_axis)).is_defined()
             && is_defined(style.resolved_min_dimension(
@@ -1709,8 +1727,8 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
         if child_style.flex_start_margin_is_auto(main_axis, direction)
             && flex_line.layout.remaining_free_space > 0.0
         {
-            flex_line.layout.main_dim += flex_line.layout.remaining_free_space
-                / flex_line.number_of_auto_margins as f32;
+            flex_line.layout.main_dim +=
+                flex_line.layout.remaining_free_space / flex_line.number_of_auto_margins as f32;
         }
 
         if perform_layout {
@@ -1727,8 +1745,8 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
         if child_style.flex_end_margin_is_auto(main_axis, direction)
             && flex_line.layout.remaining_free_space > 0.0
         {
-            flex_line.layout.main_dim += flex_line.layout.remaining_free_space
-                / flex_line.number_of_auto_margins as f32;
+            flex_line.layout.main_dim +=
+                flex_line.layout.remaining_free_space / flex_line.number_of_auto_margins as f32;
         }
         let can_skip_flex = !perform_layout && sizing_mode_cross_dim == SizingMode::StretchFit;
         if can_skip_flex {
@@ -1749,7 +1767,8 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
         } else {
             // The main dimension is the sum of all the elements dimension
             // plus the spacing.
-            flex_line.layout.main_dim += child.dimension_with_margin(main_axis, available_inner_width);
+            flex_line.layout.main_dim +=
+                child.dimension_with_margin(main_axis, available_inner_width);
 
             if is_node_baseline_layout {
                 // If the child is baseline aligned then the cross dimension
@@ -2126,18 +2145,12 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
         // If we don't measure with exact main dimension we want to ensure we
         // don't violate min and max
         if sizing_mode_main_dim != SizingMode::StretchFit {
-            let min_inner_width = style.resolved_min_dimension(
-                direction,
-                Dimension::Width,
-                owner_width,
-                owner_width,
-            ) - padding_and_border_axis_row;
-            let max_inner_width = style.resolved_max_dimension(
-                direction,
-                Dimension::Width,
-                owner_width,
-                owner_width,
-            ) - padding_and_border_axis_row;
+            let min_inner_width =
+                style.resolved_min_dimension(direction, Dimension::Width, owner_width, owner_width)
+                    - padding_and_border_axis_row;
+            let max_inner_width =
+                style.resolved_max_dimension(direction, Dimension::Width, owner_width, owner_width)
+                    - padding_and_border_axis_row;
             let min_inner_height = style.resolved_min_dimension(
                 direction,
                 Dimension::Height,
@@ -2164,8 +2177,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
 
             if is_defined(min_inner_main_dim) && flex_line.size_consumed < min_inner_main_dim {
                 available_inner_main_dim = min_inner_main_dim;
-            } else if is_defined(max_inner_main_dim)
-                && flex_line.size_consumed > max_inner_main_dim
+            } else if is_defined(max_inner_main_dim) && flex_line.size_consumed > max_inner_main_dim
             {
                 available_inner_main_dim = max_inner_main_dim;
             } else {
@@ -2725,8 +2737,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
             ),
             dimension(main_axis),
         );
-    } else if sizing_mode_main_dim == SizingMode::FitContent
-        && style.overflow() == Overflow::Scroll
+    } else if sizing_mode_main_dim == SizingMode::FitContent && style.overflow() == Overflow::Scroll
     {
         node.set_layout_measured_dimension(
             max_or_defined(
@@ -3019,8 +3030,7 @@ pub fn calculate_layout<'a, N: LayoutNode<'a>>(
         owner_width,
         owner_width,
     )) {
-        width =
-            style.resolved_max_dimension(direction, Dimension::Width, owner_width, owner_width);
+        width = style.resolved_max_dimension(direction, Dimension::Width, owner_width, owner_width);
         width_sizing_mode = SizingMode::FitContent;
     } else {
         width = owner_width;

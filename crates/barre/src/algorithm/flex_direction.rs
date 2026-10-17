@@ -29,7 +29,10 @@ pub fn resolve_direction(flex_direction: FlexDirection, direction: Direction) ->
 
 /// `resolveCrossDirection`.
 #[inline]
-pub fn resolve_cross_direction(flex_direction: FlexDirection, direction: Direction) -> FlexDirection {
+pub fn resolve_cross_direction(
+    flex_direction: FlexDirection,
+    direction: Direction,
+) -> FlexDirection {
     if is_column(flex_direction) {
         resolve_direction(FlexDirection::Row, direction)
     } else {
