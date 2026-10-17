@@ -1,22 +1,57 @@
 //! Baseline alignment (`yoga/algorithm/Baseline.cpp`).
-//!
-//! TICKET (baseline): [`calculate_baseline`] is not implemented yet; it is
-//! only reached when some node actually uses baseline alignment
-//! ([`is_baseline_layout`], which decides that, is implemented). To
-//! implement: port `calculateBaseline` into [`calculate_baseline`]; nothing
-//! outside this file needs to change. Target tests: `YGAlignBaselineTest`,
-//! `YGBaselineFuncTest`, the `align_baseline*` cases in
-//! `YGAlignItemsTest`/`YGAlignSelfTest`.
 
+use crate::algorithm::align::resolve_child_alignment;
 use crate::algorithm::flex_direction::is_column;
-use crate::enums::{Align, PositionType};
+use crate::enums::{Align, Dimension, PhysicalEdge, PositionType};
 use crate::node::{LayoutNode, NodeExt};
 
 /// `calculateBaseline`: the baseline of `node`, as an offset from its top
 /// edge.
-#[allow(unused_variables)]
 pub fn calculate_baseline<'a, N: LayoutNode<'a>>(node: N) -> f32 {
-    crate::not_implemented!("calculateBaseline")
+    if node.has_baseline_func() {
+        // Event::publish<Event::NodeBaselineStart>(node) is not ported.
+
+        let baseline = node.baseline(
+            node.layout().measured_dimension(Dimension::Width),
+            node.layout().measured_dimension(Dimension::Height),
+        );
+
+        // Event::publish<Event::NodeBaselineEnd>(node) is not ported.
+
+        // assertFatalWithNode: no FatalError path from algorithm code, so
+        // this panics with Yoga's message.
+        assert!(
+            !baseline.is_nan(),
+            "Expect custom baseline function to not return NaN"
+        );
+        return baseline;
+    }
+
+    let mut baseline_child = None;
+    for child in node.layout_children() {
+        if child.line_index() > 0 {
+            break;
+        }
+        if child.style().position_type() == PositionType::Absolute {
+            continue;
+        }
+        if resolve_child_alignment(node, child) == Align::Baseline || child.is_reference_baseline()
+        {
+            baseline_child = Some(child);
+            break;
+        }
+
+        if baseline_child.is_none() {
+            baseline_child = Some(child);
+        }
+    }
+
+    let Some(baseline_child) = baseline_child else {
+        return node.layout().measured_dimension(Dimension::Height);
+    };
+
+    let baseline = calculate_baseline(baseline_child);
+    baseline + baseline_child.layout().position(PhysicalEdge::Top)
 }
 
 /// `isBaselineLayout`: whether any of the children of this node participate
