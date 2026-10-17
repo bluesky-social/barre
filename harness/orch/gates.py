@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from common import ROOT, WORK, run, tail, write_json
-from conformance import BASELINE, run_conf, runner_error
+from conformance import BASELINE, read_ids, run_conf, runner_error
 from policy import PROTECTED, lint, matches
 
 # Submodules the engine must never see modified.
@@ -62,6 +62,27 @@ def read_results(path):
     return out
 
 
+def baseline_at(base, adir):
+    """The ratchet as it read at `base` (the attempt's starting commit), not
+    whatever `conformance/expected-pass.txt` says on disk right now.
+
+    A gate runs after the worker has already spent its turns, by which time
+    another ticket's merge may have advanced the main checkout's baseline
+    past `base` (a merge is a build plus a full suite run, on the order of a
+    minute; four slots make a same-time merge likely, not an edge case).
+    Comparing the attempt's build -- which legitimately predates that merge
+    and so legitimately lacks whatever it fixed -- against the *current*
+    baseline reports that fix as a regression in this attempt. Pin the
+    comparison to the baseline at the commit this attempt actually started
+    from, the same way the merge bot pins it to a worktree instead of the
+    live branch."""
+    adir = Path(adir)
+    text = run(["git", "show", f"{base}:{BASELINE}"], cwd=ROOT, check=False).stdout
+    path = adir / "baseline-at-base.txt"
+    path.write_text(text)
+    return path
+
+
 def check_attempt(cfg, ticket, slot_index, cwd, base, head, adir):
     """Returns the gate report dict (also written to adir/gate.json)."""
     adir = Path(adir)
@@ -108,14 +129,15 @@ def check_attempt(cfg, ticket, slot_index, cwd, base, head, adir):
         if proc.returncode != 0:
             rep["reject"].append(f"check failed: {cmd}")
 
+    base_baseline = baseline_at(base, adir)
     if ticket.target:
         proc, s = run_conf(ticket.target, cwd, adir, "target", target_dir=target_dir,
-                           baseline=ROOT / BASELINE, cfg=cfg.conf)
+                           baseline=base_baseline, cfg=cfg.conf)
         if s is None:
             rep["reject"].append("the conformance runner produced no results: " + runner_error(proc)[-600:])
             return finish(rep, adir)
         from worker import target_pass_count
-        before = target_pass_count(ticket.target)
+        before = target_pass_count(ticket.target, read_ids(base_baseline))
         rep["conf"] = {
             "runs": s["runs"], "before": before, "after": s["pass"], "new_passes": len(s["new_passes"]),
             "new_sample": s["new_passes"][:15],
@@ -144,7 +166,7 @@ def check_attempt(cfg, ticket, slot_index, cwd, base, head, adir):
     # gate rejection, not a wasted verifier call and a merge refusal.
     if cfg.gate.get("full_check", True):
         full_proc, full_s = run_conf([], cwd, adir, "gate-full", target_dir=target_dir,
-                                     baseline=ROOT / BASELINE, cfg=cfg.conf)
+                                     baseline=base_baseline, cfg=cfg.conf)
         if full_s is None:
             rep["reject"].append("the full-suite regression check produced no results: "
                                  + runner_error(full_proc)[-600:])
