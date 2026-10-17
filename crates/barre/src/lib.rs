@@ -20,6 +20,7 @@ pub mod debug;
 pub mod enums;
 pub mod node;
 pub mod numeric;
+pub mod stats;
 pub mod style;
 
 pub use config::Config;

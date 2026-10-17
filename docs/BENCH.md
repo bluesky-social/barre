@@ -138,6 +138,16 @@ full run):
 | `micro/build_feed50_tree` | 131 µs | 151 µs | 1.16× | 1.17× | | |
 | geometric mean, 35 workloads | | | **0.75×** | 0.91× | | |
 
+**Update (`371c971`).** T-0010 (`8abfb2e`) added an owner-size check to
+every cache hit that resolved eight style values twice: `rotate` went to
+344 µs (1.43×), the clean-relayout early-out from 14 to 31 ns (1.5× Yoga),
+`fresh` 0.61 → 0.67×. `371c971` skips that check when the owner size is
+unchanged or the style has no percentage in those inputs (same answers):
+`rotate` 276 µs (1.13×), clean 14 ns (0.67×), `fresh` 0.60×,
+`text_same_size` 0.41×, `resize` 0.59×, `capture/*` 0.58–0.64× (`--quick`).
+What is left of the `rotate` gap is T-0006's replays (Layout calls per
+node, item 3; idea 1).
+
 `rotate` regressed with T-0006 (stale flex basis fix, `9bdbf48`), not with
 the perf work: with the same perf commits on top of `ee0dc1f` (before
 T-0006) it was 178 µs (0.68×), on top of `0e42d3c` (after) 323 µs. Measure
@@ -197,7 +207,7 @@ Perf commits (each `./conf` clean, checksums unchanged; numbers are
    shrink distribution of an ancestor measure yields a new width: 126
    distinct widths per node at depth 16, against an 8-entry cache), and
    the available height multiplies that by ~8.5× (keyed on width alone
-   there would be 996 calls). See idea 7. RN's feed is fine (548 calls for
+   there would be 996 calls). See ideas 2 and 8. RN's feed is fine (548 calls for
    ~500 texts), so it bites only deep shrinking row/column chains.
 7. Clean relayouts are an early-out in both (12 vs 21 ns): RN pays nothing
    for an unchanged tree.
@@ -248,6 +258,61 @@ were 832, 400 and 320 B. Yoga's `Node` 624 B, `Style` 160 B (+ pool overflow), `
 memcpy'd on *every* ShadowNode clone (docs/RN-SHIM.md §3c), so their size is
 RN memory and clone cost, not just layout cache footprint.
 
+## Layout calls per node (`stats` feature)
+
+`cargo build --release -p barre-ffi --features stats` builds barre with
+per-layout counters (`crates/barre/src/stats.rs`; compiled out otherwise).
+Link it like the bench does (`bench/build/build.ninja`, the `bench-barre-*`
+link line with this `libbarre_ffi.a`) and run
+`BARRE_STATS=1 bench-barre --run NAME --time-ms 0 --warmup-ms 0 --captures vendor/yoga/benchmark/captures`:
+one summary per `YGNodeCalculateLayout` on stderr (calls by pass type and
+cache outcome, calls and runs per node, `calculate_layout_impl` calls,
+T-0006 anchor replays, measure callbacks, and runs whose result equals an
+entry this layout already stored under other constraints, by class).
+
+Steady state (4th layout), at `371c971`:
+
+| workload | nodes visited | `_internal` calls (/node) | `_impl` runs | of which replays | leaf runs (= measure callbacks) | container runs: measure / layout | runs equal to a same-layout entry |
+|---|---|---|---|---|---|---|---|
+| `rn/feed50/fresh` | 1451 | 11 858 (8.2) | 5272 | 0 | 548 | 3768 / 956 | 3717 |
+| `rn/feed50/rotate` | 1101 | 4131 (3.8) | 908 | 435 | 0 | 0 / 473 (+435 replays) | 0 |
+| `rn/feed50/resize` | 1451 | 11 334 (7.8) | 4080 | 0 | 148 | 3484 / 448 | 3209 |
+| `rn/feed50/text_change` | 79 | 414 (5.2) | 79 | 0 | 1 | 71 / 7 | 62 |
+| `rn/feed50/insert_remove` | 52 | 202 (3.9) | 6 | 0 | 0 | 4 / 2 | 3 |
+| `capture/feed-android` | 559 | 3615 (6.5) | 2869 | 0 | 57 | 2307 / 505 | 2200 |
+| `capture/chat-mac` | 1512 | 21 691 (14.3) | 13 162 | 0 | 162 | 11 704 / 1296 | 11 062 |
+
+1. **Leaves are fine; containers are measured ~4 times per layout.** Every
+   text is measured about once (548 callbacks for ~500 texts), but each
+   container *runs* `calculate_layout_impl` 4–5 times in a fresh feed
+   layout (8 in `chat-mac`): a measure pass per distinct constraint its
+   parent asks for (flex basis at max-content height, then fit-content,
+   then the stretch/flex layout), and each run re-asks its own children
+   under new constraints. Yoga does exactly the same calls (the counts are
+   the same algorithm); it is where the remaining time goes.
+2. **70% of container runs return a result the node already computed this
+   layout under other constraints** (3717 of 5272 in `fresh`, 11 062 of
+   13 162 in `chat-mac`). By class (`fresh`): a node measured at
+   `(StretchFit w, MaxContent)` and then asked `(StretchFit w, FitContent H)`
+   with the content height fitting `H` (667), the same from `FitContent w`
+   (540 + 540), `MaxContent` height then `StretchFit` at the measured height
+   (287 measure + 287 layout). `capture/feed-android`: 1260 of 2812
+   container runs are the first class alone. Yoga reuses exactly this
+   (`oldSizeIsMaxContentAndStillFits`, `sizeIsExactAndMatchesOldMeasuredSize`)
+   only for measure-function leaves; containers need an exact key. Extending
+   it to containers is idea 2 below: the biggest lever left, and the one
+   that goes beyond Yoga, so it needs a proof per class, not a guess.
+3. **`rotate` spends half its runs in T-0006 replays.** 435 of 908 runs
+   are anchor replays (measure-only re-runs of a container's first call,
+   answered from an earlier layout's cache, before its layout run); every
+   call they make is a cache hit (no measure callback, no store). With
+   replays disabled `rotate` is 174 µs (0.70×), with them 276 µs (1.13×).
+   152 of the 435 replay nodes have a descendant with a retainable basis
+   (`flex: 1` `content` column in each post and its ancestors), 283 do
+   not. See idea 1 for why they can't simply be skipped.
+4. Same-generation cache hits are 50–60% of all calls and cost ~1% (lookup
+   only); `HitEarlierGen` dominates relayouts (`text_change`: 329 of 414).
+
 ## Optimisation ideas, ranked by expected impact
 
 Each is phrased as a ticket. "Measure" means `bench/run <prefix>` (the check
@@ -259,37 +324,74 @@ Done (see Results): incremental pixel-grid rounding (`cd11304`; memo in
 pre-resolved edges (`f91e07d`, plus the all-undefined bitmask `c11d1b3`),
 no allocation per flex line (`97cec15`, `InlineVec` in `flex_line.rs`).
 
-1. **Fewer edge lookups per node.** Still the top self-time item (26%).
-   Yoga's structure calls `compute{Margin,Padding,Border}` and their
-   `*ForAxis`/`PaddingAndBorder` sums many times per node per pass with the
-   same arguments. Options: per-`Edges` precomputed point values (when the
-   chosen value is points, `resolve` needs no reference length), so the
-   common case is one load; or compute a node's padding+border once per
-   `calculate_layout_impl` (as Yoga's `paddingAndBorderForAxis` callers
-   could) and pass it down. Touches `calculate_layout.rs` heavily, so wait
-   for the swarm to be idle. Expected −10–15% fresh.
-2. **`rn/feed50/rotate` regression from T-0006.** 178 → 323 µs with no
-   change in measure calls or new-layout nodes. Profile it
-   (`bench/profile rn/feed50/rotate`) and see what the flex-basis anchor
-   replays on a pure resize; owner: whoever maintains T-0006's code.
-3. **Compact `Style` (and `LayoutResults`)** for RN memory, not speed:
+1. **`rotate`: skip T-0006 replays that cannot matter** (needs a
+   decision; branch `perf-replay-skip`). The replay exists to re-establish
+   which call *anchors* a container's retained flex bases. A sticky
+   per-node flag (`flex_basis_history`) records whether any run in the
+   subtree ever wrote a retainable basis that is not one constant under
+   every call (a content-measured or percent basis, a `singleFlexChild`
+   zero that differs from the resolved one); while it is clear, every
+   retainable basis is that constant whichever call anchors it, and the
+   replay of a call identical to the entry that answered it is skipped.
+   Result: `rotate` 276 → 174 µs (0.67×), every bench checksum, measure
+   count and new-layout count unchanged, `./conf` 847/847. **But it is not
+   exact**: a differential fuzzer (random trees, 10 relayouts with dirty
+   text edits, hashing layouts per step) differs from main on 14 of
+   18 000 runs, all through Yoga's measure-cache *compatibility* reuse
+   (a skipped replay would have measured a leaf at another size and
+   stored it; a later call reuses that entry at a compatible size, so the
+   leaf's height differs by a pixel). Against fresh layouts it is a wash
+   (relayout≠fresh on 523 vs 522 of 9000 fuzz runs: one fixed, two
+   broken). Making it exact needs proof that the replay (and every
+   replay it would cause in descendants) is all cache hits, i.e. a record
+   of each container's last executed replay per anchor key plus
+   per-subtree cache-rewrite stamps (~70 B per node), not worth it. So:
+   accept the residual-class difference (and document it in
+   conformance/divergences.md), or keep paying the replays.
+2. **Reuse a container's result across compatible constraints** (beyond
+   Yoga; Findings "Layout calls per node", item 2). 70% of container runs
+   recompute a result the node already has from this layout, mostly
+   `MaxContent` height → `FitContent H` with the content height fitting
+   (`capture/feed-android`: 1260 of 2812 runs). Yoga reuses exactly that
+   for measure-function leaves (`oldSizeIsMaxContentAndStillFits`) but
+   requires an exact key for containers, because a container's layout can
+   read the available height: percent heights/min/max/basis/gaps of its
+   children, `flex-grow` along a column main axis, `justify-content` free
+   space, aspect ratios, and measure funcs below it receiving `AtMost`
+   instead of `Undefined`. A per-node, per-axis "result independent of
+   the available size while the content fits" predicate (style-only for
+   the node and its descendants, cached per node and invalidated with
+   style/children changes) would let `find_cached_result` accept those
+   entries for containers. Upper bound: ~40% of container runs in
+   `fresh`/`capture` (and their subtrees' calls). Needs its own design and
+   fuzzing against fresh layouts; the measure-func part repeats the
+   assumption Yoga already makes for leaves.
+3. **Fewer edge lookups per node.** Still the top self-time group
+   (`compute_margin_for_axis`, `compute_margin`, `compute_padding`,
+   `compute_border`, `Edges::compute`, `resolved_min/max_dimension`: ~37%
+   self of `fresh` at `371c971`). Yoga's structure calls them many times
+   per node per pass with the same arguments; `padding_and_border_for_axis`
+   alone is 13% inclusive. Options: per-`Edges` precomputed point values,
+   or a node's padding+border resolved once per `calculate_layout_impl` and
+   passed down. Expected −10–15% fresh.
+4. **Compact `Style` (and `LayoutResults`)** for RN memory, not speed:
    `Style` is 448 B (the resolved-edge tables added 48 B), Yoga's 160 B.
    Splitting `Edges` into f32 values + unit bytes saves 96 B and measured
    neutral; dimensions/gap the same way save ~40 B more. Do it when
    `barre-rn` exists and the blob size matters (docs/RN-SHIM.md §3c).
-4. **Cache lookup.** `find_cached_result` / `can_use_cached_measurement`
+5. **Cache lookup.** `find_cached_result` / `can_use_cached_measurement`
    are now ~1% of fresh; leave them to T-0010's cache-key work.
-5. **Build nodes in place.** `node/tree.rs`, `node_new`:
+6. **Build nodes in place.** `node/tree.rs`, `node_new`:
    `Box::new(Node::new(config))` copies the node from the stack. Use
    `Box::new_uninit()` + field-wise writes. C-API-only (RN keeps
    `yoga::Node`). Expected: `micro/node_new_free` 40 → ~30 ns.
-6. **Incremental rounding of moved subtrees.** Cells below an edit move,
+7. **Incremental rounding of moved subtrees.** Cells below an edit move,
    so their subtrees are re-rounded (`text_change` is 0.65× where
    `text_same_size` is 0.41×). A subtree translated by a whole number of
    pixels rounds to the same values translated, but not bit-exactly in
    general (f64 sums), so this needs either a proof for the grid-aligned
    case or acceptance of a difference from Yoga; probably not worth it.
-7. **Deep-nesting re-layout amplification** (ticket proposal, beyond
+8. **Deep-nesting re-layout amplification** (ticket proposal, beyond
    Yoga; for the cache owner after T-0010). Finding 6: the misses are
    genuinely distinct constraints, so a bigger cache or looser sizing-mode
    matching would not help. What would: recognising that a measurement at
@@ -303,7 +405,7 @@ no allocation per flex line (`97cec15`, `InlineVec` in `flex_line.rs`).
    node, and tests where it must *not* apply. Low RN priority: real feeds
    measure each text ~once. Metric: measure-call column of
    `bench/run rn/deep`.
-8. **FMA policy** (fidelity, not speed): see Finding 3; decided in
+9. **FMA policy** (fidelity, not speed): see Finding 3; decided in
    docs/PLAN.md (accept). Unchanged.
 
 ## Requested Cargo profile change
