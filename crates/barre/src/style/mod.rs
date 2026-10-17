@@ -356,6 +356,11 @@ impl Edges {
         }
     }
 
+    #[inline]
+    fn all_undefined(&self) -> bool {
+        self.values.iter().all(|v| v.is_undefined())
+    }
+
     /// `Style::computeLeftEdge` / `computeTopEdge` / `computeRightEdge` /
     /// `computeBottomEdge`, through the table.
     #[inline]
@@ -364,6 +369,11 @@ impl Edges {
         self.values[index as usize]
     }
 }
+
+const EDGES_MARGIN: u8 = 1;
+const EDGES_POSITION: u8 = 2;
+const EDGES_PADDING: u8 = 4;
+const EDGES_BORDER: u8 = 8;
 
 impl PartialEq for Edges {
     fn eq(&self, other: &Edges) -> bool {
@@ -389,6 +399,10 @@ pub struct Style {
     overflow: Overflow,
     display: Display,
     box_sizing: BoxSizing,
+    /// Bit `EDGES_*` set when every value of that `Edges` is undefined, so
+    /// the common no-margin/no-padding/no-border/no-inset lookups return
+    /// without touching the `Edges` (barre-only, derived; see [`Edges`]).
+    undefined_edges: u8,
     flex: f32,
     flex_grow: f32,
     flex_shrink: f32,
@@ -461,6 +475,7 @@ impl Style {
             overflow: Overflow::Visible,
             display: Display::Flex,
             box_sizing: BoxSizing::BorderBox,
+            undefined_edges: EDGES_MARGIN | EDGES_POSITION | EDGES_PADDING | EDGES_BORDER,
             flex: f32::NAN,
             flex_grow: f32::NAN,
             flex_shrink: f32::NAN,
@@ -520,12 +535,22 @@ impl Style {
     }
 
     #[inline]
+    fn set_undefined_edges(&mut self, bit: u8, undefined: bool) {
+        if undefined {
+            self.undefined_edges |= bit;
+        } else {
+            self.undefined_edges &= !bit;
+        }
+    }
+
+    #[inline]
     pub fn margin(&self, edge: Edge) -> StyleLength {
         self.margin.get(edge)
     }
     #[inline]
     pub fn set_margin(&mut self, edge: Edge, value: StyleLength) {
         self.margin.set(edge, value);
+        self.set_undefined_edges(EDGES_MARGIN, self.margin.all_undefined());
     }
     #[inline]
     pub fn position(&self, edge: Edge) -> StyleLength {
@@ -534,6 +559,7 @@ impl Style {
     #[inline]
     pub fn set_position(&mut self, edge: Edge, value: StyleLength) {
         self.position.set(edge, value);
+        self.set_undefined_edges(EDGES_POSITION, self.position.all_undefined());
     }
     #[inline]
     pub fn padding(&self, edge: Edge) -> StyleLength {
@@ -542,6 +568,7 @@ impl Style {
     #[inline]
     pub fn set_padding(&mut self, edge: Edge, value: StyleLength) {
         self.padding.set(edge, value);
+        self.set_undefined_edges(EDGES_PADDING, self.padding.all_undefined());
     }
     #[inline]
     pub fn border(&self, edge: Edge) -> StyleLength {
@@ -550,6 +577,7 @@ impl Style {
     #[inline]
     pub fn set_border(&mut self, edge: Edge, value: StyleLength) {
         self.border.set(edge, value);
+        self.set_undefined_edges(EDGES_BORDER, self.border.all_undefined());
     }
     #[inline]
     pub fn gap(&self, gutter: Gutter) -> StyleLength {
@@ -1058,21 +1086,33 @@ impl Style {
     /// `Style::computePosition`.
     #[inline]
     pub fn compute_position(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
+        if self.undefined_edges & EDGES_POSITION != 0 {
+            return StyleLength::UNDEFINED;
+        }
         self.position.compute(edge, direction)
     }
     /// `Style::computeMargin`.
     #[inline]
     pub fn compute_margin(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
+        if self.undefined_edges & EDGES_MARGIN != 0 {
+            return StyleLength::UNDEFINED;
+        }
         self.margin.compute(edge, direction)
     }
     /// `Style::computePadding`.
     #[inline]
     pub fn compute_padding(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
+        if self.undefined_edges & EDGES_PADDING != 0 {
+            return StyleLength::UNDEFINED;
+        }
         self.padding.compute(edge, direction)
     }
     /// `Style::computeBorder`.
     #[inline]
     pub fn compute_border(&self, edge: PhysicalEdge, direction: Direction) -> StyleLength {
+        if self.undefined_edges & EDGES_BORDER != 0 {
+            return StyleLength::UNDEFINED;
+        }
         self.border.compute(edge, direction)
     }
 }
