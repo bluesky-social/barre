@@ -268,6 +268,14 @@ fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
     owner_width: f32,
     owner_height: f32,
 ) -> bool {
+    // Same owner size, or no percentage among the inputs: they resolve to
+    // the same values, so skip resolving them twice.
+    let same = |a: f32, b: f32| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
+    if (same(entry.owner_width, owner_width) && same(entry.owner_height, owner_height))
+        || !node.style().has_owner_relative_box()
+    {
+        return true;
+    }
     let style = node.style();
     let resolve = |ow: f32, oh: f32| {
         [

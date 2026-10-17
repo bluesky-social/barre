@@ -361,6 +361,11 @@ impl Edges {
         self.values.iter().all(|v| v.is_undefined())
     }
 
+    #[inline]
+    fn any_percent(&self) -> bool {
+        self.values.iter().any(|v| v.is_percent())
+    }
+
     /// `Style::computeLeftEdge` / `computeTopEdge` / `computeRightEdge` /
     /// `computeBottomEdge`, through the table.
     #[inline]
@@ -374,6 +379,13 @@ const EDGES_MARGIN: u8 = 1;
 const EDGES_POSITION: u8 = 2;
 const EDGES_PADDING: u8 = 4;
 const EDGES_BORDER: u8 = 8;
+
+/// `Style::percent_inputs` bits: which owner-size-relative inputs hold a
+/// percentage.
+const PERCENT_MARGIN: u8 = 1;
+const PERCENT_PADDING: u8 = 2;
+const PERCENT_BORDER: u8 = 4;
+const PERCENT_MIN_MAX: u8 = 8;
 
 impl PartialEq for Edges {
     fn eq(&self, other: &Edges) -> bool {
@@ -403,6 +415,11 @@ pub struct Style {
     /// the common no-margin/no-padding/no-border/no-inset lookups return
     /// without touching the `Edges` (barre-only, derived; see [`Edges`]).
     undefined_edges: u8,
+    /// `PERCENT_*` bit set when that margin/padding/border `Edges`, or any
+    /// min/max dimension, holds a percentage, i.e. resolves differently under
+    /// a different owner size (barre-only, derived; see
+    /// [`Style::has_owner_relative_box`]).
+    percent_inputs: u8,
     flex: f32,
     flex_grow: f32,
     flex_shrink: f32,
@@ -476,6 +493,7 @@ impl Style {
             display: Display::Flex,
             box_sizing: BoxSizing::BorderBox,
             undefined_edges: EDGES_MARGIN | EDGES_POSITION | EDGES_PADDING | EDGES_BORDER,
+            percent_inputs: 0,
             flex: f32::NAN,
             flex_grow: f32::NAN,
             flex_shrink: f32::NAN,
@@ -535,6 +553,24 @@ impl Style {
     }
 
     #[inline]
+    fn set_percent_input(&mut self, bit: u8, percent: bool) {
+        if percent {
+            self.percent_inputs |= bit;
+        } else {
+            self.percent_inputs &= !bit;
+        }
+    }
+
+    /// barre-only: whether any of the inputs `calculate_layout_internal`'s
+    /// cache key resolves against the owner size (margin, padding, border,
+    /// min/max dimensions) is a percentage. When none is, they resolve to the
+    /// same values under every owner size.
+    #[inline]
+    pub fn has_owner_relative_box(&self) -> bool {
+        self.percent_inputs != 0
+    }
+
+    #[inline]
     fn set_undefined_edges(&mut self, bit: u8, undefined: bool) {
         if undefined {
             self.undefined_edges |= bit;
@@ -551,6 +587,7 @@ impl Style {
     pub fn set_margin(&mut self, edge: Edge, value: StyleLength) {
         self.margin.set(edge, value);
         self.set_undefined_edges(EDGES_MARGIN, self.margin.all_undefined());
+        self.set_percent_input(PERCENT_MARGIN, self.margin.any_percent());
     }
     #[inline]
     pub fn position(&self, edge: Edge) -> StyleLength {
@@ -569,6 +606,7 @@ impl Style {
     pub fn set_padding(&mut self, edge: Edge, value: StyleLength) {
         self.padding.set(edge, value);
         self.set_undefined_edges(EDGES_PADDING, self.padding.all_undefined());
+        self.set_percent_input(PERCENT_PADDING, self.padding.any_percent());
     }
     #[inline]
     pub fn border(&self, edge: Edge) -> StyleLength {
@@ -578,6 +616,7 @@ impl Style {
     pub fn set_border(&mut self, edge: Edge, value: StyleLength) {
         self.border.set(edge, value);
         self.set_undefined_edges(EDGES_BORDER, self.border.all_undefined());
+        self.set_percent_input(PERCENT_BORDER, self.border.any_percent());
     }
     #[inline]
     pub fn gap(&self, gutter: Gutter) -> StyleLength {
@@ -602,6 +641,7 @@ impl Style {
     #[inline]
     pub fn set_min_dimension(&mut self, axis: Dimension, value: StyleSizeLength) {
         self.min_dimensions[axis as usize] = value.stored();
+        self.update_percent_min_max();
     }
     #[inline]
     pub fn max_dimension(&self, axis: Dimension) -> StyleSizeLength {
@@ -610,6 +650,17 @@ impl Style {
     #[inline]
     pub fn set_max_dimension(&mut self, axis: Dimension, value: StyleSizeLength) {
         self.max_dimensions[axis as usize] = value.stored();
+        self.update_percent_min_max();
+    }
+
+    #[inline]
+    fn update_percent_min_max(&mut self) {
+        let percent = self
+            .min_dimensions
+            .iter()
+            .chain(self.max_dimensions.iter())
+            .any(|v| v.is_percent());
+        self.set_percent_input(PERCENT_MIN_MAX, percent);
     }
 
     /// Undefined (NaN) when unset.
