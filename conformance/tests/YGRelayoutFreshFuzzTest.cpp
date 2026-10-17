@@ -4,7 +4,8 @@
  * relayout differed from a fresh layout of the same tree while real Yoga's
  * did not. Each test is one mechanism in barre's own cross-layout cache
  * logic (T-0006's flex-basis anchor, the yoga#1932 baseline layout), traced
- * from the minimised case it names.
+ * from the minimised case it names. The last test guards the fix of the
+ * second against a regression the fuzzer found while it was being made.
  *
  * Every tree is laid out at each size in turn and compared after every step
  * with a freshly built tree laid out directly at that size, at point scales
@@ -175,6 +176,23 @@ YGNodeRef buildSingleFlexChildFromEarlierLayout(YGConfigRef config) {
   return root;
 }
 
+// root > wrapping row > [`flexBasis: 1`, `minHeight: 90`; `flexBasis: 100`,
+// `aspectRatio: 2` > child with `flexBasis: 2%`].
+YGNodeRef buildFixedSizeMeasureFirst(YGConfigRef config) {
+  YGNodeRef root = YGNodeNewWithConfig(config);
+  YGNodeRef row = child(root, config);
+  YGNodeStyleSetFlexDirection(row, YGFlexDirectionRow);
+  YGNodeStyleSetFlexWrap(row, YGWrapWrap);
+  YGNodeRef first = child(row, config);
+  YGNodeStyleSetFlexBasis(first, 1);
+  YGNodeStyleSetMinHeight(first, 90);
+  YGNodeRef second = child(row, config);
+  YGNodeStyleSetFlexBasis(second, 100);
+  YGNodeStyleSetAspectRatio(second, 2);
+  YGNodeStyleSetFlexBasisPercent(child(second, config), 2);
+  return root;
+}
+
 } // namespace
 
 // fuzzer/cases/barre-only-basis-mode2.case. A container's call answered from
@@ -219,4 +237,15 @@ TEST(YGRelayoutFreshFuzzTest, single_flex_child_call_from_earlier_layout) {
       buildSingleFlexChildFromEarlierLayout,
       layoutPinned,
       {{400, 100}, {100, 100}, {400, 100}});
+}
+
+// Minimised from fuzzer seed 5580 (mode 2). A container's first call in a
+// layout is a measurement at a fixed size, which returns before computing
+// any flex basis; in a fresh layout the first call that writes its child's
+// percent basis (resolved against that call's height) is a later one. Not a
+// failure of `stack` at the time it was found: it guards the flex-basis
+// anchor rule against treating the fixed-size measurement as the anchor.
+TEST(YGRelayoutFreshFuzzTest, fixed_size_measurement_is_not_an_anchor) {
+  expectRelayoutMatchesFresh(
+      buildFixedSizeMeasureFirst, layoutAtStyleWidth, {{100, 800}, {200, 400}});
 }
