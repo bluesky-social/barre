@@ -1694,6 +1694,10 @@ fn resolve_flexible_length<'a, N: LayoutNode<'a>>(
 }
 
 /// `justifyMainAxis`.
+///
+/// Deliberate divergence from Yoga (yoga#1932): the baseline of a
+/// baseline-aligned child is read through `calculate_baseline_of_child`, which
+/// lays the child out first, so the extra arguments are passed through to it.
 fn justify_main_axis<'a, N: LayoutNode<'a>>(
     node: N,
     flex_line: &mut FlexLine<N>,
@@ -1707,7 +1711,12 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
     available_inner_main_dim: f32,
     available_inner_cross_dim: f32,
     available_inner_width: f32,
+    available_inner_height: f32,
     perform_layout: bool,
+    reason: LayoutPassReason,
+    layout_marker_data: &mut LayoutData,
+    depth: u32,
+    generation_count: u32,
 ) {
     let style = node.style();
 
@@ -1860,12 +1869,20 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
                 // If the child is baseline aligned then the cross dimension
                 // is calculated by adding maxAscent and maxDescent from the
                 // baseline.
-                let ascent = calculate_baseline(child)
-                    + child_style.compute_flex_start_margin(
-                        FlexDirection::Column,
-                        direction,
-                        available_inner_width,
-                    );
+                let ascent = calculate_baseline_of_child(
+                    child,
+                    direction,
+                    available_inner_width,
+                    available_inner_height,
+                    reason,
+                    layout_marker_data,
+                    depth,
+                    generation_count,
+                ) + child_style.compute_flex_start_margin(
+                    FlexDirection::Column,
+                    direction,
+                    available_inner_width,
+                );
                 let descent = child.layout().measured_dimension(Dimension::Height)
                     + child_style
                         .compute_margin_for_axis(FlexDirection::Column, available_inner_width)
@@ -1890,6 +1907,53 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
     if is_node_baseline_layout {
         flex_line.layout.cross_dim = max_ascent_for_current_line + max_descent_for_current_line;
     }
+}
+
+/// `calculateBaseline` of a baseline-aligned `child`, with the child's
+/// subtree laid out first.
+///
+/// Deliberate divergence from Yoga (yoga#1932): when a node's own width and
+/// height are already known, a measure-only pass takes the
+/// `measure_node_with_fixed_size` shortcut in `calculate_layout_internal` and
+/// never recurses into the node's children. Their measured dimensions are then
+/// never written, and `calculate_baseline` can read them as NaN. So a baseline
+/// child with children is laid out again at its measured size (StretchFit,
+/// `perform_layout`), which writes real measured dimensions down its subtree
+/// before its baseline is read. The child's measured size is unchanged, so the
+/// owner's flex results do not change. The shortcut itself is not changed.
+fn calculate_baseline_of_child<'a, N: LayoutNode<'a>>(
+    child: N,
+    direction: Direction,
+    available_inner_width: f32,
+    available_inner_height: f32,
+    reason: LayoutPassReason,
+    layout_marker_data: &mut LayoutData,
+    depth: u32,
+    generation_count: u32,
+) -> f32 {
+    if child.layout_child_count() > 0 {
+        let child_style = child.style();
+        let child_width = child.layout().measured_dimension(Dimension::Width)
+            + child_style.compute_margin_for_axis(FlexDirection::Row, available_inner_width);
+        let child_height = child.layout().measured_dimension(Dimension::Height)
+            + child_style.compute_margin_for_axis(FlexDirection::Column, available_inner_width);
+        calculate_layout_internal(
+            child,
+            child_width,
+            child_height,
+            direction,
+            SizingMode::StretchFit,
+            SizingMode::StretchFit,
+            available_inner_width,
+            available_inner_height,
+            true,
+            reason,
+            layout_marker_data,
+            depth,
+            generation_count,
+        );
+    }
+    calculate_baseline(child)
 }
 
 /// `calculateLayoutImpl`: the main routine, implementing a subset of the
@@ -2342,7 +2406,12 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
             available_inner_main_dim,
             available_inner_cross_dim,
             available_inner_width,
+            available_inner_height,
             perform_layout,
+            reason,
+            layout_marker_data,
+            depth,
+            generation_count,
         );
 
         let mut container_cross_axis = available_inner_cross_dim;
@@ -2618,12 +2687,20 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
                         );
                     }
                     if resolve_child_alignment(node, child) == Align::Baseline {
-                        let ascent = calculate_baseline(child)
-                            + child_style.compute_flex_start_margin(
-                                FlexDirection::Column,
-                                direction,
-                                available_inner_width,
-                            );
+                        let ascent = calculate_baseline_of_child(
+                            child,
+                            direction,
+                            available_inner_width,
+                            available_inner_height,
+                            reason,
+                            layout_marker_data,
+                            depth,
+                            generation_count,
+                        ) + child_style.compute_flex_start_margin(
+                            FlexDirection::Column,
+                            direction,
+                            available_inner_width,
+                        );
                         let descent = child.layout().measured_dimension(Dimension::Height)
                             + child_style.compute_margin_for_axis(
                                 FlexDirection::Column,
@@ -2758,7 +2835,16 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
                         Align::Baseline => {
                             child.set_layout_position(
                                 current_lead + max_ascent_for_current_line
-                                    - calculate_baseline(child)
+                                    - calculate_baseline_of_child(
+                                        child,
+                                        direction,
+                                        available_inner_width,
+                                        available_inner_height,
+                                        reason,
+                                        layout_marker_data,
+                                        depth,
+                                        generation_count,
+                                    )
                                     + child_style.compute_flex_start_position(
                                         FlexDirection::Column,
                                         direction,
