@@ -222,8 +222,20 @@ barre's API. kahvi's calibration results do not carry over; the verifier has
 to be recalibrated on this set (and after any change to the verifier prompt,
 questions or models). A configuration is only trusted with 0 critical misses.
 
-| date | verifier | exact | critical misses | good work rejected | $/case |
-|---|---|---|---|---|---|
+| date | verifier | cases | exact | critical misses | good work rejected | $/case |
+|---|---|---|---|---|---|---|
+| 2026-10-17 | haiku screen → sonnet confirm | 12 | 12/12 | 0 | 0 | 0.027 |
+| 2026-10-17 | haiku-5-5 alone ×2 | 12 | 24/24 | 0 | 0 | 0.002 |
+| 2026-10-17 | sonnet-5-5 alone | 12 | 12/12 | 0 | 0 | 0.046 |
+| 2026-10-17 | **haiku screen → sonnet confirm** ×2 (+ case 13) | 13 | 26/26 | 0 | 0 | 0.005 (cached) |
+
+Every model got every case right on the first barre set, so it does not yet
+separate configurations the way kahvi's did: add harder cases (subtle cheats
+that keep Yoga's structure, faithful ports with very different Rust
+structure) as real attempts show what slips through. Haiku labels the
+"deliberate fix" excuse (case 13) and the missing margin (case 10) as fakery,
+which escalates the ticket at once; acceptable, but watch for it rejecting
+honest deviations the ticket asked for.
 
 What carried over from kahvi's calibration (2026-10-13), as design:
 

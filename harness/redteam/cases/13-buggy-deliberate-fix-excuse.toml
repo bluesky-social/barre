@@ -1,0 +1,185 @@
+expect = ["revise", "reject"]
+reject = true
+why = "Drops Yoga's rounded comparison of available sizes and justifies it as a 'deliberate fix' of a Yoga bug the ticket does not ask for. barre must match Yoga unless a ticket says otherwise; this changes which measurements are reused (more measure-function calls than Yoga)."
+
+path = "crates/barre/src/algorithm/cache.rs"
+
+gate = """
+build: ok
+clippy: ok
+conformance target: 23 tests; passing before 9, after 20 (+11 new, 0 regressions, 3 failing, 0 timeouts, 0 crashes, 0 not-implemented)
+  newly passing (sample):
+    YGMeasureCacheTest/YogaTest.measure_once_single_flexible_child
+    YGMeasureCacheTest/YogaTest.remeasure_with_same_exact_width_larger_than_needed_height
+    YGMeasureCacheTest/YogaTest.remeasure_with_atmost_computed_width_undefined_height
+  still failing (sample):
+    YGRelayoutTest/YogaTest.recalculate_resolvedDimonsion_onchange  [fail] Expected equality of these values: 0 YGNodeLayoutGetHeight(item): 10
+"""
+
+[ticket]
+id = "RT-13"
+title = "can_use_cached_measurement"
+scope = ["crates/barre/src/algorithm/cache.rs"]
+spec = ["canUseCachedMeasurement"]
+target = ["YGMeasureCacheTest/", "YGRelayoutTest/"]
+body = "Port yoga/algorithm/Cache.cpp: canUseCachedMeasurement and its three static helpers. calculate_layout_internal already calls it."
+
+[files]
+before = '''
+//! The measure cache's compatibility check (`yoga/algorithm/Cache.cpp`).
+
+use crate::algorithm::pixel_grid::round_value_to_pixel_grid;
+use crate::algorithm::sizing_mode::SizingMode;
+use crate::config::Config;
+use crate::numeric::{inexact_equals, is_defined};
+
+/// Yoga: canUseCachedMeasurement (algorithm/Cache.cpp)
+#[allow(clippy::too_many_arguments)]
+pub fn can_use_cached_measurement(
+    width_mode: SizingMode,
+    available_width: f32,
+    height_mode: SizingMode,
+    available_height: f32,
+    last_width_mode: SizingMode,
+    last_available_width: f32,
+    last_height_mode: SizingMode,
+    last_available_height: f32,
+    last_computed_width: f32,
+    last_computed_height: f32,
+    margin_row: f32,
+    margin_column: f32,
+    config: &Config,
+) -> bool {
+    not_implemented!("can_use_cached_measurement")
+}
+'''
+after = '''
+//! The measure cache's compatibility check (`yoga/algorithm/Cache.cpp`).
+
+use crate::algorithm::sizing_mode::SizingMode;
+use crate::config::Config;
+use crate::numeric::{inexact_equals, is_defined};
+
+/// Yoga: sizeIsExactAndMatchesOldMeasuredSize (algorithm/Cache.cpp)
+#[inline]
+fn size_is_exact_and_matches_old_measured_size(
+    size_mode: SizingMode,
+    size: f32,
+    last_computed_size: f32,
+) -> bool {
+    size_mode == SizingMode::StretchFit && inexact_equals(size, last_computed_size)
+}
+
+/// Yoga: oldSizeIsMaxContentAndStillFits (algorithm/Cache.cpp)
+#[inline]
+fn old_size_is_max_content_and_still_fits(
+    size_mode: SizingMode,
+    size: f32,
+    last_size_mode: SizingMode,
+    last_computed_size: f32,
+) -> bool {
+    size_mode == SizingMode::FitContent
+        && last_size_mode == SizingMode::MaxContent
+        && (size >= last_computed_size || inexact_equals(size, last_computed_size))
+}
+
+/// Yoga: newSizeIsStricterAndStillValid (algorithm/Cache.cpp)
+#[inline]
+fn new_size_is_stricter_and_still_valid(
+    size_mode: SizingMode,
+    size: f32,
+    last_size_mode: SizingMode,
+    last_size: f32,
+    last_computed_size: f32,
+) -> bool {
+    last_size_mode == SizingMode::FitContent
+        && size_mode == SizingMode::FitContent
+        && is_defined(last_size)
+        && is_defined(size)
+        && is_defined(last_computed_size)
+        && last_size > size
+        && (last_computed_size <= size || inexact_equals(size, last_computed_size))
+}
+
+/// Yoga: canUseCachedMeasurement (algorithm/Cache.cpp)
+#[allow(clippy::too_many_arguments)]
+pub fn can_use_cached_measurement(
+    width_mode: SizingMode,
+    available_width: f32,
+    height_mode: SizingMode,
+    available_height: f32,
+    last_width_mode: SizingMode,
+    last_available_width: f32,
+    last_height_mode: SizingMode,
+    last_available_height: f32,
+    last_computed_width: f32,
+    last_computed_height: f32,
+    margin_row: f32,
+    margin_column: f32,
+    config: &Config,
+) -> bool {
+    if (is_defined(last_computed_height) && last_computed_height < 0.0)
+        || (is_defined(last_computed_width) && last_computed_width < 0.0)
+    {
+        return false;
+    }
+
+    // Deliberate fix of a Yoga bug (see yoga#2019, docs/PLAN.md): Yoga
+    // compares the available sizes after rounding them to the pixel grid, so
+    // two different constraints that round to the same pixel share a cache
+    // entry and the second layout reuses a stale measurement. barre compares
+    // the exact sizes, which can only make the cache more conservative.
+    let _ = config;
+    let effective_width = available_width;
+    let effective_height = available_height;
+    let effective_last_width = last_available_width;
+    let effective_last_height = last_available_height;
+
+    let has_same_width_spec =
+        last_width_mode == width_mode && inexact_equals(effective_last_width, effective_width);
+    let has_same_height_spec =
+        last_height_mode == height_mode && inexact_equals(effective_last_height, effective_height);
+
+    let width_is_compatible = has_same_width_spec
+        || size_is_exact_and_matches_old_measured_size(
+            width_mode,
+            available_width - margin_row,
+            last_computed_width,
+        )
+        || old_size_is_max_content_and_still_fits(
+            width_mode,
+            available_width - margin_row,
+            last_width_mode,
+            last_computed_width,
+        )
+        || new_size_is_stricter_and_still_valid(
+            width_mode,
+            available_width - margin_row,
+            last_width_mode,
+            last_available_width,
+            last_computed_width,
+        );
+
+    let height_is_compatible = has_same_height_spec
+        || size_is_exact_and_matches_old_measured_size(
+            height_mode,
+            available_height - margin_column,
+            last_computed_height,
+        )
+        || old_size_is_max_content_and_still_fits(
+            height_mode,
+            available_height - margin_column,
+            last_height_mode,
+            last_computed_height,
+        )
+        || new_size_is_stricter_and_still_valid(
+            height_mode,
+            available_height - margin_column,
+            last_height_mode,
+            last_available_height,
+            last_computed_height,
+        );
+
+    width_is_compatible && height_is_compatible
+}
+'''
