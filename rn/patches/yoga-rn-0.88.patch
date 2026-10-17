@@ -1,3 +1,55 @@
+diff --git a/ReactCommon/yoga/Yoga.podspec b/ReactCommon/yoga/Yoga.podspec
+index fda642d..89e968c 100644
+--- a/ReactCommon/yoga/Yoga.podspec
++++ b/ReactCommon/yoga/Yoga.podspec
+@@ -30,11 +30,21 @@ Pod::Spec.new do |spec|
+   spec.module_name = 'yoga'
+   spec.header_dir = 'yoga'
+   spec.requires_arc = false
++  # barre (https://github.com/bluesky-social/barre, docs/RN-SHIM.md): when a
++  # barre-rn build is installed next to this podspec
++  # (barre-rn/BarreRN.xcframework), link it and build Yoga with its layout
++  # switch (yoga/barre/BarreHost.h). The switch is off unless the app is
++  # launched with BARRE_LAYOUT=1.
++  barre_rn = File.exist?(File.join(__dir__, 'barre-rn', 'BarreRN.xcframework'))
++
+   spec.pod_target_xcconfig = {
+       'DEFINES_MODULE' => 'YES'
+   }.merge!(ENV['USE_FRAMEWORKS'] != nil ? {
+       'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)"'
++  } : {}).merge!(barre_rn ? {
++      'GCC_PREPROCESSOR_DEFINITIONS' => '$(inherited) BARRE_RN=1'
+   } : {})
++  spec.vendored_frameworks = 'barre-rn/BarreRN.xcframework' if barre_rn
+   spec.compiler_flags = [
+       '-fno-omit-frame-pointer',
+       '-fexceptions',
+diff --git a/ReactCommon/yoga/yoga/CMakeLists.txt b/ReactCommon/yoga/yoga/CMakeLists.txt
+index b6eca1a..c04494a 100644
+--- a/ReactCommon/yoga/yoga/CMakeLists.txt
++++ b/ReactCommon/yoga/yoga/CMakeLists.txt
+@@ -29,6 +29,21 @@ if (ANDROID)
+     target_link_libraries(yogacore log)
+ endif()
+ 
++# barre (https://github.com/bluesky-social/barre, docs/RN-SHIM.md): when a
++# barre-rn build for this ABI is installed (barre-rn/<abi>/libbarre_rn.a next
++# to this directory), link it and build Yoga with its layout switch
++# (yoga/barre/BarreHost.h). The switch is off unless the debug.barre.layout
++# system property is 1 when the app starts.
++set(BARRE_RN_LIB ${YOGA_ROOT}/barre-rn/${ANDROID_ABI}/libbarre_rn.a)
++if(ANDROID AND EXISTS ${BARRE_RN_LIB})
++    add_library(barre_rn STATIC IMPORTED)
++    set_target_properties(barre_rn PROPERTIES IMPORTED_LOCATION ${BARRE_RN_LIB})
++    target_link_libraries(yogacore barre_rn)
++    target_compile_definitions(yogacore PRIVATE BARRE_RN=1)
++    # keep Rust's std symbols out of libreactnative.so's exports
++    target_link_options(yogacore INTERFACE -Wl,--exclude-libs,libbarre_rn.a)
++endif()
++
+ check_ipo_supported(RESULT result)
+ if(result)
+   set_target_properties(yogacore PROPERTIES
 diff --git a/ReactCommon/yoga/yoga/YGNodeLayout.cpp b/ReactCommon/yoga/yoga/YGNodeLayout.cpp
 index 50c8766..df53484 100644
 --- a/ReactCommon/yoga/yoga/YGNodeLayout.cpp
