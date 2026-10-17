@@ -3210,20 +3210,24 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     // barre-only (yoga#1552, yoga#2019): track this node's flex-basis
     // anchor. A call starts a new anchor when it is the node's first in this
     // layout (read `generation_count` before the store at the end) or its
-    // main axis is `MaxContent` (every non-`auto`-basis child then goes
-    // through a rewriting branch).
+    // available main-axis size is undefined: `compute_flex_basis_for_child`
+    // then sends every non-`auto`-basis child through a rewriting branch,
+    // because its resolved-basis branch (the one that keeps a basis) needs a
+    // defined inner main size. A `MaxContent` main axis is not enough: a
+    // caller can pass a defined size with it, and that call keeps the bases
+    // (found by the fuzzer, `slots-barre-only`).
     let has_children = !node.has_measure_func() && node.layout_child_count() > 0;
     // Only read the stored anchor when the cheaper conditions do not already
     // start a new one; it is the anchor in effect only in that case.
     let stored = if layout.generation_count.get() != generation_count {
         None
     } else {
-        let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
-            width_sizing_mode
+        let available_main_size = if is_row(node.style().flex_direction()) {
+            available_width
         } else {
-            height_sizing_mode
+            available_height
         };
-        if main_axis_sizing_mode == SizingMode::MaxContent {
+        if is_undefined(available_main_size) {
             None
         } else {
             Some(layout.flex_basis_anchor.get())
