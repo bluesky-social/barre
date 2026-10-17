@@ -6,6 +6,12 @@ Builds bench/src once (thin-LTO bitcode), links it against real Yoga
 barre-ffi (cargo --release, fat LTO, codegen-units=1, from a clean `git
 archive` of a commit so a concurrently edited working tree can't leak in),
 runs every workload on both engines interleaved, and prints a markdown table.
+
+--rn adds React Native's Yoga (ReactCommon/yoga with rn/patches/ applied,
+the same tree `./conf --engine rn-*` builds), linked with crates/barre-rn
+into one binary, run with the layout switch off (rn-yoga) and on (rn-barre):
+the cost of barre's host interface over RN's C++ nodes, against barre's own
+C ABI and against Yoga.
 """
 
 import argparse
@@ -25,7 +31,9 @@ from pathlib import Path
 
 BENCH = Path(__file__).resolve().parent
 ROOT = BENCH.parent
-VENDOR = ROOT / "vendor" / "yoga"
+# $BARRE_VENDOR: a checkout's vendor/ dir, for worktrees without submodules
+# (as ./conf).
+VENDOR = (Path(os.environ["BARRE_VENDOR"]) if os.environ.get("BARRE_VENDOR") else ROOT / "vendor") / "yoga"
 BUILD = BENCH / "build"
 RESULTS = BENCH / "results"
 
@@ -81,7 +89,7 @@ def barre_source(args):
     return dest, sha[:12]
 
 
-def build_barre(args):
+def build_barre(args, package="barre-ffi"):
     src, label = barre_source(args)
     env = dict(os.environ)
     env.update(CARGO_ENV)
@@ -92,9 +100,9 @@ def build_barre(args):
     for kv in args.cargo_env:
         k, _, v = kv.partition("=")
         env[k] = v
-    log(f"bench: cargo build --release -p barre-ffi ({label}, "
+    log(f"bench: cargo build --release -p {package} ({label}, "
         + ", ".join(f"{k}={env[k]}" for k in sorted(env) if k.startswith("CARGO_PROFILE")) + ")")
-    p = subprocess.run(["cargo", "build", "--release", "-p", "barre-ffi", "--message-format=json-render-diagnostics",
+    p = subprocess.run(["cargo", "build", "--release", "-p", package, "--message-format=json-render-diagnostics",
                         "--manifest-path", str(src / "Cargo.toml")],
                        env=env, text=True, stdout=subprocess.PIPE)
     if p.returncode != 0:
@@ -108,7 +116,7 @@ def build_barre(args):
         if msg.get("reason") == "compiler-artifact" and "staticlib" in msg.get("target", {}).get("kind", []):
             lib = next(f for f in msg["filenames"] if f.endswith(".a"))
     if lib is None:
-        raise SystemExit("bench: no barre-ffi staticlib in cargo output")
+        raise SystemExit(f"bench: no {package} staticlib in cargo output")
     return Path(lib), label
 
 
@@ -126,7 +134,7 @@ def write_ninja(args):
     tag = hashlib.sha1(" ".join(common).encode()).hexdigest()[:8]
 
     def o(src, kind):
-        rel = src.relative_to(ROOT)
+        rel = src.relative_to(VENDOR.parent.parent if src.is_relative_to(VENDOR) else ROOT)
         return obj / tag / kind / (str(rel).replace("/", "__") + ".o")
 
     L = ["ninja_required_version = 1.5", f"builddir = {BUILD}",
@@ -149,18 +157,43 @@ def write_ninja(args):
     bins = {"yoga": BUILD / "bin" / f"bench-yoga-{tag}", "barre": BUILD / "bin" / f"bench-barre-{tag}"}
     L.append(f"build {bins['yoga']}: link {' '.join(map(str, bench_objs + yoga_objs))}\n  flags = {link_flags}\n  libs =")
     L.append(f"build {bins['barre']}: link {' '.join(map(str, bench_objs))} | $barre_lib\n  flags = {link_flags}\n  libs = $barre_lib -liconv")
+    if args.rn:
+        # RN's patched Yoga (BARRE_RN) + the bench compiled against its
+        # headers + barre-rn: one binary for both rn-* engines.
+        rn = args.rn_tree
+        inc_rn = [f"-I{rn['root']}"]
+        # RN's headers first, so <yoga/...> resolves to RN's Yoga, not vendor's
+        inc_bench_extra = [f"-I{VENDOR}", f"-I{VENDOR / 'lib'}", f"-I{BENCH / 'src'}"]
+        rn_objs = []
+        for s in rn["srcs"]:
+            out = obj / tag / ("rn-" + rn["tag"]) / (str(s.relative_to(rn["root"])).replace("/", "__") + ".o")
+            rn_objs.append(out)
+            L.append(f"build {out}: cxx {s}\n  flags = {' '.join(common + inc_rn + ['-Wall', '-Werror', '-DBARRE_RN=1'])}")
+        for s in bench_srcs:
+            out = o(s, "bench-rn-" + rn["tag"])
+            rn_objs.append(out)
+            L.append(f"build {out}: cxx {s}\n  flags = {' '.join(common + inc_rn + inc_bench_extra)}")
+        bins["rn"] = BUILD / "bin" / f"bench-rn-{tag}-{rn['tag']}"
+        L.append(f"build {bins['rn']}: link {' '.join(map(str, rn_objs))} | $barre_rn_lib\n  flags = {link_flags}\n  libs = $barre_rn_lib -liconv")
     return L, bins, common
 
 
 def build(args):
     BUILD.mkdir(parents=True, exist_ok=True)
     lib, label = build_barre(args)
+    if args.rn:
+        sys.path.insert(0, str(ROOT / "harness" / "conf"))
+        import conf  # noqa: E402 (the conformance runner's RN tree preparation)
+        args.rn_tree = conf.rn_tree(BUILD, patched=True)
+        rn_lib, _ = build_barre(args, "barre-rn")
     L, bins, flags = write_ninja(args)
     L.insert(2, f"barre_lib = {lib}")
+    if args.rn:
+        L.insert(2, f"barre_rn_lib = {rn_lib}")
     ninja_file = BUILD / "build.ninja"
     ninja_file.write_text("\n".join(L) + "\n")
     log("bench: ninja (yoga + bench objects, links)")
-    sh(["ninja", "-f", str(ninja_file), str(bins["yoga"]), str(bins["barre"])],
+    sh(["ninja", "-f", str(ninja_file), *map(str, bins.values())],
        stdout=subprocess.DEVNULL if not args.verbose else None)
     # Sanity: each binary contains exactly one engine.
     def syms(p):
@@ -180,18 +213,30 @@ def build(args):
 # Run
 
 
-def run_one(binary, name, args, dump=None):
+RN_BARRE_BANNER = "barre: laying out with barre"
+
+
+def run_one(binary, name, args, dump=None, engine=None):
     cmd = [str(binary), "--run", name, "--time-ms", str(args.time_ms), "--warmup-ms", str(args.warmup_ms),
            "--captures", str(VENDOR / "benchmark" / "captures")]
     if dump:
         cmd += ["--dump", str(dump)]
+    env = dict(os.environ)
+    env.pop("BARRE_LAYOUT", None)
+    if engine == "rn-barre":
+        env["BARRE_LAYOUT"] = "1"
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=args.timeout, env=env)
     except subprocess.TimeoutExpired:
         return {"error": f"timeout after {args.timeout}s"}
     if p.returncode != 0:
         tail = (p.stderr or p.stdout).strip().splitlines()[-3:]
         return {"error": f"exit {p.returncode}: " + " | ".join(tail)[:300]}
+    # The patched Yoga prints the banner when it first decides (on the first
+    # layout or layout read); micro/ workloads that do neither never decide.
+    banner = RN_BARRE_BANNER in p.stderr
+    if (engine == "rn-yoga" and banner) or (engine == "rn-barre" and not banner and not name.startswith("micro/")):
+        return {"error": f"{engine}: layout switch not as requested"}
     try:
         return json.loads(p.stdout.strip().splitlines()[-1])
     except (json.JSONDecodeError, IndexError):
@@ -212,8 +257,8 @@ def dump_path(engine, name):
     return BUILD / "dumps" / engine / (name.replace("/", "__") + ".txt")
 
 
-def compare_dumps(name):
-    a, b = dump_path("yoga", name), dump_path("barre", name)
+def compare_dumps(name, ea="yoga", eb="barre"):
+    a, b = dump_path(ea, name), dump_path(eb, name)
     if not (a.exists() and b.exists()):
         return "no dump"
     la, lb = a.read_text().splitlines(), b.read_text().splitlines()
@@ -272,14 +317,14 @@ def per_layout(xs):
     return "/".join(str(u) for u in uniq)
 
 
-def check_cell(name, y, b):
+def check_cell(name, y, b, ea="yoga", eb="barre"):
     if "error" in y or "error" in b:
         return "ERROR"
     notes = []
     if y["checksum"] is None:
         notes.append("n/a")
     elif y["checksum"] != b["checksum"]:
-        notes.append("**MISMATCH**: " + compare_dumps(name))
+        notes.append("**MISMATCH**: " + compare_dumps(name, ea, eb))
     else:
         notes.append("ok")
     if y["measure_check"] != b["measure_check"]:
@@ -314,6 +359,33 @@ def table(results):
     return "\n".join(rows)
 
 
+def rn_table(results):
+    """--rn: the four engines; ratios for the in-app A/B (rn-barre/rn-yoga), the
+    host interface (rn-barre/barre) and the patched RN Yoga (rn-yoga/yoga)."""
+    rows = ["| workload | yoga | barre | rn-yoga | rn-barre | rn-barre/rn-yoga | rn-barre/barre | rn-yoga/yoga "
+            "| check rn-barre vs barre | check rn-yoga vs yoga |",
+            "|---|---|---|---|---|---|---|---|---|---|"]
+    ratios = {"ab": [], "host": [], "patch": []}
+    for name, r in results.items():
+        def cell(e):
+            return "ERROR: " + r[e]["error"] if "error" in r[e] else fmt_ns(r[e]["median"])
+
+        def ratio(a, b, key):
+            if "error" in r[a] or "error" in r[b]:
+                return "-"
+            x = r[a]["median"] / r[b]["median"]
+            ratios[key].append(x)
+            return f"{x:.2f}×"
+        rows.append(f"| `{name}` | {cell('yoga')} | {cell('barre')} | {cell('rn-yoga')} | {cell('rn-barre')} "
+                    f"| **{ratio('rn-barre', 'rn-yoga', 'ab')}** | {ratio('rn-barre', 'barre', 'host')} "
+                    f"| {ratio('rn-yoga', 'yoga', 'patch')} "
+                    f"| {check_cell(name, r['barre'], r['rn-barre'], 'barre', 'rn-barre')} "
+                    f"| {check_cell(name, r['yoga'], r['rn-yoga'], 'yoga', 'rn-yoga')} |")
+    rows.append(f"| geometric mean | | | | | **{geomean(ratios['ab']):.2f}×** | {geomean(ratios['host']):.2f}× "
+                f"| {geomean(ratios['patch']):.2f}× | | |")
+    return "\n".join(rows)
+
+
 def geomean(xs):
     import math
     xs = [x for x in xs if x > 0]
@@ -336,13 +408,16 @@ def main():
     ap.add_argument("--no-lto", action="store_true", help="drop -flto from the C++ side")
     ap.add_argument("--build-only", action="store_true")
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--engines", default="yoga,barre")
+    ap.add_argument("--engines", default=None)
+    ap.add_argument("--rn", action="store_true",
+                    help="also run React Native's patched Yoga with barre-rn, switch off and on (rn-yoga, rn-barre)")
     ap.add_argument("--no-latest", action="store_true", help="don't overwrite bench/results/latest.md")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     args.rounds = args.rounds or (2 if args.quick else 5)
     args.time_ms = args.time_ms or (60 if args.quick else 300)
     args.warmup_ms = args.warmup_ms or (20 if args.quick else 100)
+    args.engines = args.engines or ("yoga,barre,rn-yoga,rn-barre" if args.rn else "yoga,barre")
 
     bins, label, cflags, lib = build(args)
     if args.build_only:
@@ -365,13 +440,24 @@ def main():
         for i, n in enumerate(names):
             order = engines if (rnd + i) % 2 == 0 else list(reversed(engines))
             for e in order:
-                res = run_one(bins[e], n, args, dump=dump_path(e, n) if rnd == 0 else None)
+                b = bins["rn"] if e.startswith("rn-") else bins[e]
+                res = run_one(b, n, args, dump=dump_path(e, n) if rnd == 0 else None, engine=e)
                 raw[n][e].append(res)
                 if "error" in res and rnd == 0:
                     log(f"bench: {e} {n}: {res['error']}")
         log(f"bench: round {rnd + 1}/{args.rounds} done ({(datetime.datetime.now() - t0).seconds}s)")
 
     results = {n: {e: summarize(raw[n][e]) for e in engines} for n in names}
+    if args.rn and sorted(engines) == sorted(["yoga", "barre", "rn-yoga", "rn-barre"]):
+        md = rn_table(results) + "\n"
+        print(md)
+        RESULTS.mkdir(exist_ok=True)
+        stamp = f"{t0:%Y%m%d-%H%M%S}-{label.replace('+', '_')}-rn"
+        (RESULTS / f"{stamp}.json").write_text(json.dumps({"label": label, "time": t0.isoformat(), "rn": True,
+                                                            "results": results}, indent=1, default=str))
+        (RESULTS / f"{stamp}.md").write_text(md)
+        log(f"bench: wrote bench/results/{stamp}.md")
+        return
     if engines != ["yoga", "barre"]:
         print(json.dumps(results, indent=1))
         return

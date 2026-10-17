@@ -223,7 +223,37 @@ impl Default for LayoutResults {
     }
 }
 
+/// Byte offsets of the layout results inside [`LayoutResults`], for a host
+/// that embeds `LayoutResults` and reads results without calling into Rust
+/// (the React Native shim reads them in `YGNodeLayoutGet*`, docs/RN-SHIM.md).
+/// `direction` is a `u8` holding the `YGDirection` value, `had_overflow` a
+/// `bool`; the rest are `f32` arrays indexed by `Dimension` or
+/// `PhysicalEdge`, as their getters are.
+#[derive(Copy, Clone, Debug)]
+pub struct LayoutResultsOffsets {
+    pub direction: usize,
+    pub had_overflow: usize,
+    pub dimensions: usize,
+    pub raw_dimensions: usize,
+    pub position: usize,
+    pub margin: usize,
+    pub border: usize,
+    pub padding: usize,
+}
+
 impl LayoutResults {
+    /// See [`LayoutResultsOffsets`].
+    pub const OFFSETS: LayoutResultsOffsets = LayoutResultsOffsets {
+        direction: std::mem::offset_of!(LayoutResults, direction),
+        had_overflow: std::mem::offset_of!(LayoutResults, had_overflow),
+        dimensions: std::mem::offset_of!(LayoutResults, dimensions),
+        raw_dimensions: std::mem::offset_of!(LayoutResults, raw_dimensions),
+        position: std::mem::offset_of!(LayoutResults, position),
+        margin: std::mem::offset_of!(LayoutResults, margin),
+        border: std::mem::offset_of!(LayoutResults, border),
+        padding: std::mem::offset_of!(LayoutResults, padding),
+    };
+
     /// `layout = {}` / `setLayout({})` in Yoga: resets every field to its
     /// default, except the two that Yoga keeps on the node rather than in
     /// `LayoutResults` (`line_index`, `processed_dimensions`).
@@ -367,3 +397,8 @@ fn copy_cells<const N: usize>(dst: &[Cell<f32>; N], src: &[Cell<f32>; N]) {
 // A host may store `LayoutResults` as raw bytes and copy them (docs/API.md):
 // it must stay plain data.
 const _: () = assert!(!std::mem::needs_drop::<LayoutResults>());
+
+// `LayoutResultsOffsets` promises these representations.
+const _: () = assert!(std::mem::size_of::<Direction>() == 1);
+const _: () = assert!(std::mem::size_of::<Cell<bool>>() == 1);
+const _: () = assert!(std::mem::size_of::<[Cell<f32>; 4]>() == 16);
