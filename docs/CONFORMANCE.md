@@ -68,8 +68,8 @@ Output:
   with S one of `pass`, `fail`, `crash`, `timeout`, `build-fail`, `skip`.
   R is empty for a pass, and otherwise one line:
   - `not implemented: <name>` whenever the output contains barre's
-    `not_implemented!` panic message (`not implemented: <name>`), whatever
-    the status (usually `crash`, since the C ABI aborts);
+    `not_implemented!` panic message (`not implemented: <name>`, the rest of
+    that line), whatever the status (usually `crash`, since the C ABI aborts);
   - `panic: <message>` for any other Rust panic;
   - `<file>:<line>: <assertion details>` for a gtest assertion failure;
   - `SIGABRT` / `SIGSEGV` / ..., `memory limit exceeded`,
@@ -159,8 +159,11 @@ from the `TEST(...)` macros in the source.
 A build dir is locked (`flock`) exclusively while building and shared while
 running, so concurrent `./conf` runs on one build dir are safe.
 
-Timing on a 14-core M-series Mac: first build ~6 s (with `--yoga`), a no-op
-rebuild plus the full ~750 in-scope tests ~2 s.
+Timing on a 14-core M-series Mac: first build from scratch ~6 s (googletest,
+suite objects, libyoga); relinking all 54 binaries after an engine change
+~2.5 s; a no-op rebuild plus the full ~750 in-scope tests ~2 s.
+
+Requirements: python3, ninja, clang++ (or `$CXX`), nm, cargo.
 
 ## How it runs, and why passes can't be faked
 

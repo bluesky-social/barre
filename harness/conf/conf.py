@@ -516,14 +516,15 @@ def link_canary(build: Build, tmp: Path, obj: Path, barre: bool, engine_lib: Pat
 # running
 
 
-NOT_IMPL_RE = re.compile(r"not[ _]implemented!?\s*[:(]\s*\"?([^\"\n)]*)")
+NOT_IMPL_RE = re.compile(r"not implemented: ([^\n]+)|not_implemented!\(\"([^\"\n]*)\"\)")
+BACKTRACE_LINE_RE = re.compile(r"^\s+(\d+:\s+0x[0-9a-f]+|at )|^stack backtrace:$")
 PANIC_RE = re.compile(r"panicked at [^\n]*?:\d+:\d+:\n([^\n]+)")
 
 
 def failure_reason(status: str, rc, out: str, timeout: float) -> str:
     m = NOT_IMPL_RE.search(out)
     if m:
-        return f"not implemented: {m.group(1).strip()}"
+        return f"not implemented: {(m.group(1) or m.group(2)).strip()}"[:300]
     if status == "timeout":
         return f"timeout after {timeout:g}s"
     m = PANIC_RE.search(out)
@@ -575,7 +576,8 @@ def run_one(binary: Path, test: str, args, cwd: Path):
             pass
         raw, _ = p.communicate()
         timed_out = True
-    out = raw.decode("utf-8", errors="replace")
+    out = "\n".join(ln for ln in raw.decode("utf-8", errors="replace").splitlines()
+                    if not BACKTRACE_LINE_RE.match(ln))
     rc = p.returncode
     marker = re.search(rf"^CONF-RESULT {nonce} ran=(\d+) passed=(\d+) failed=(\d+) skipped=(\d+)$", out, re.M)
     if timed_out:
@@ -597,7 +599,8 @@ def run_one(binary: Path, test: str, args, cwd: Path):
         status = "crash"
     if status == "pass":
         return status, "", ""
-    return status, failure_reason(status, rc, out, args.timeout), out[-OUTPUT_KEEP:]
+    keep = out if len(out) <= OUTPUT_KEEP else out[:OUTPUT_KEEP // 2] + "\n...\n" + out[-OUTPUT_KEEP // 2:]
+    return status, failure_reason(status, rc, out, args.timeout), keep
 
 
 def list_tests(binary: Path, cache_path: Path):
@@ -899,8 +902,15 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
                 break
             shown += 1
             print(f"--- {st.upper()} {tid}: {reason}", file=out)
-            tail = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("CONF-RESULT")]
-            for ln in (tail[:12] if st == "build-fail" else tail[-12:]):
+            tail = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith(("CONF-RESULT", "[=", "[-"))]
+            first = next((i for i, ln in enumerate(tail) if "panicked at" in ln or ": Failure" in ln), None)
+            if st == "build-fail":
+                tail = tail[:12]
+            elif first is not None:
+                tail = tail[first:first + 12]
+            else:
+                tail = tail[-12:]
+            for ln in tail:
                 print(f"    {ln[:200]}", file=out)
     if args.by_file:
         rows = {}
