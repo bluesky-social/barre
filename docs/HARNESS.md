@@ -202,6 +202,21 @@ Other commands:
 Configuration is in `harness/orch.toml`. Per-machine overrides go in
 `work/orch.local.toml`, for example `slots = 8` or a different verifier model.
 `BARRE_WORK=/some/dir` runs a separate orchestrator with its own state.
+To smoke-test the whole pipeline (worker tools in a slot, gates, verifier,
+merge bot) without touching `main`, run the smoke ticket against a scratch
+branch with its own state:
+
+```
+git branch -f smoke-scratch main
+BARRE_WORK=/tmp/barre-smoke ./orch run --tickets tickets/smoke --branch smoke-scratch --max-attempts 2
+# clean up: its worktrees, the snapshot branch it created, the attempt refs
+rm -rf /tmp/barre-smoke && git worktree prune && git branch -D smoke-scratch orch-runs
+git for-each-ref --format='%(refname)' refs/barre | xargs -n1 git update-ref -d
+```
+
+(2026-10-17: one Haiku attempt, $0.04 in all, ported `calculateBaseline`,
+passed the gates and both verifiers and merged with +65 passes.)
+
 `python3 harness/orch/selftest.py` checks the pieces that need no model and
 no engine (spec lookups, lint rules, result normalisation, ticket parsing, the
 usage-limit policy, the red-team cases).
