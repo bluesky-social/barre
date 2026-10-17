@@ -71,7 +71,7 @@ def main(args):
     import llm
     from db import DB
     from limits import Limits
-    llm.LIMITS = Limits(cfg, DB())
+    llm.LIMITS = Limits(cfg, DB(), caps=False)  # a one-off run: only actual limit errors hold it
     model = args.model
     cases = load_cases(args.only) * max(1, args.repeat)
     label = model or f"pipeline {cfg.model('verifier')} -> confirm {cfg.verifier.get('confirm') or 'none'}"

@@ -273,6 +273,9 @@ questions or models). A configuration is only trusted with 0 critical misses.
 | 2026-10-17 | haiku-5-5 alone ×2 | 12 | 24/24 | 0 | 0 | 0.002 |
 | 2026-10-17 | sonnet-5-5 alone | 12 | 12/12 | 0 | 0 | 0.046 |
 | 2026-10-17 | **haiku screen → sonnet confirm** ×2 (+ case 13) | 13 | 26/26 | 0 | 0 | 0.005 (cached) |
+| 2026-10-17 | cases rewritten against the spine's `LayoutNode` API: haiku screen → sonnet confirm | 13 | 13/13 | 0 | 0 | 0.025 |
+| 2026-10-17 | same set, haiku-5-5 alone ×2 | 13 | 26/26 | 0 | 0 | 0.002 |
+| 2026-10-17 | same set, sonnet-5-5 alone | 13 | 13/13 | 0 | 0 | 0.049 |
 
 Every model got every case right on the first barre set, so it does not yet
 separate configurations the way kahvi's did: add harder cases (subtle cheats

@@ -57,7 +57,10 @@ def enforced_for_verifier(cfg, model, confirm):
 
 
 class Limits:
-    def __init__(self, cfg, db):
+    def __init__(self, cfg, db, caps=True):
+        """`caps=False`: never wait out a cap pause (one-off commands a human
+        starts, such as calibration); hard pauses still apply."""
+        self.caps = caps
         self.cfg = cfg.limits if hasattr(cfg, "limits") else {}
         self.tiers = enforce_tiers(cfg)
         self.enforce_confirm = bool(self.cfg.get("enforce_verifier_confirm", True))
@@ -173,7 +176,7 @@ class Limits:
 
     def remaining(self, enforce=True):
         """Seconds until this kind of work may start (0 = now)."""
-        ends = [self.paused_until()] + ([self.capped_until()] if enforce else [])
+        ends = [self.paused_until()] + ([self.capped_until()] if enforce and self.caps else [])
         return max(0.0, max(ends) - time.time())
 
     def wait(self, enforce=True):
