@@ -51,7 +51,7 @@ jobs:
           mkdir -p out
           cp "$json" out/bench.json
           # Drop bench/run's title line; the README and the history add their own.
-          sed '1{/^# /d;}' bench-raw.md > out/bench.md
+          sed '1{/^# /d;}' bench-raw.md | sed '/./,$!d' > out/bench.md
           cat out/bench.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

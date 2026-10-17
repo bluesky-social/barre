@@ -316,8 +316,11 @@ class Stacker:
                 t = pool.get(g["ticket"])
                 lines.append(f"- {g['ticket']}: {t.title if t else ''} (attempt {g['attempt']}, verdict {g['verdict']})")
         below = f"#{floor['pr']}" if floor and floor["pr"] else f"`{self.trunk_branch()}`"
-        return ("Swarm work, stacked on " + below + ". Accepted by the gates and the blind verifier; "
-                "CI runs the full conformance suite against the layer below's results (0 regressions).\n\n"
+        if all(g["kind"] == "land" for g in group):
+            what = "Architect work, stacked on " + below + " (`./orch land`); "
+        else:
+            what = "Swarm work, stacked on " + below + ". Accepted by the gates and the blind verifier; "
+        return (what + "CI runs the full conformance suite against the layer below's results (0 regressions).\n\n"
                 + "\n".join(lines) + "\n\nOpened by the barre stacker (docs/STACKS.md).")
 
     def _link(self, floor, pr):
