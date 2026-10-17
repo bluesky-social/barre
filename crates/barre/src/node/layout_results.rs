@@ -71,6 +71,16 @@ pub struct LayoutResults {
     /// `Node::processedDimensions_` (see `processDimensions`).
     pub processed_dimensions: [Cell<StyleSizeLength>; 2],
 
+    /// barre-only memo for incremental pixel-grid rounding
+    /// (`algorithm/pixel_grid.rs`): the absolute position of this node's
+    /// owner and the point scale factor this subtree was last rounded with,
+    /// and whether that rounding left every value in the subtree unchanged
+    /// (and the subtree has no absolutely positioned node).
+    pub rounding_absolute_left: Cell<f64>,
+    pub rounding_absolute_top: Cell<f64>,
+    pub rounding_point_scale_factor: Cell<f32>,
+    pub rounding_stable: Cell<bool>,
+
     direction: Cell<Direction>,
     had_overflow: Cell<bool>,
     dimensions: [Cell<f32>; 2],
@@ -99,6 +109,10 @@ impl Default for LayoutResults {
                 Cell::new(StyleLength::UNDEFINED),
                 Cell::new(StyleLength::UNDEFINED),
             ],
+            rounding_absolute_left: Cell::new(f64::NAN),
+            rounding_absolute_top: Cell::new(f64::NAN),
+            rounding_point_scale_factor: Cell::new(f32::NAN),
+            rounding_stable: Cell::new(false),
             direction: Cell::new(Direction::Inherit),
             had_overflow: Cell::new(false),
             dimensions: [Cell::new(f32::NAN), Cell::new(f32::NAN)],
@@ -153,6 +167,13 @@ impl LayoutResults {
         self.line_index.set(other.line_index.get());
         self.processed_dimensions[0].set(other.processed_dimensions[0].get());
         self.processed_dimensions[1].set(other.processed_dimensions[1].get());
+        self.rounding_absolute_left
+            .set(other.rounding_absolute_left.get());
+        self.rounding_absolute_top
+            .set(other.rounding_absolute_top.get());
+        self.rounding_point_scale_factor
+            .set(other.rounding_point_scale_factor.get());
+        self.rounding_stable.set(other.rounding_stable.get());
         self.direction.set(other.direction.get());
         self.had_overflow.set(other.had_overflow.get());
         copy_cells(&self.dimensions, &other.dimensions);

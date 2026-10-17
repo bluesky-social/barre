@@ -100,6 +100,14 @@ pub fn insert_child(owner: NodePtr, child: NodePtr, index: usize) -> Result<(), 
 pub fn swap_child(owner: NodePtr, child: NodePtr, index: usize) {
     owner.live().replace_child_at(child, index);
     child.live().set_owner(Some(owner));
+    // Not a dirtying change (as in Yoga), so the incremental pixel-grid
+    // rounding memo of every ancestor no longer describes its subtree
+    // (algorithm/pixel_grid.rs).
+    let mut node = Some(owner.live());
+    while let Some(n) = node {
+        n.layout().rounding_stable.set(false);
+        node = n.owner();
+    }
 }
 
 /// Detaches `child` from its old owner: its layout is no longer valid and it
