@@ -3211,16 +3211,27 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     // main axis is `MaxContent` (every non-`auto`-basis child then goes
     // through a rewriting branch).
     let has_children = !node.has_measure_func() && node.layout_child_count() > 0;
-    let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
-        width_sizing_mode
+    // Only read the stored anchor when the cheaper conditions do not already
+    // start a new one; it is the anchor in effect only in that case.
+    let stored = if layout.generation_count.get() != generation_count {
+        None
     } else {
-        height_sizing_mode
+        let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
+            width_sizing_mode
+        } else {
+            height_sizing_mode
+        };
+        if main_axis_sizing_mode == SizingMode::MaxContent {
+            None
+        } else {
+            Some(layout.flex_basis_anchor.get())
+        }
     };
-    let stored = layout.flex_basis_anchor.get();
-    let starts_anchor = layout.generation_count.get() != generation_count
-        || main_axis_sizing_mode == SizingMode::MaxContent
+    let starts_anchor = match stored {
+        None => true,
         // Defensive: no anchor yet this layout.
-        || stored.generation != generation_count;
+        Some(stored) => stored.generation != generation_count,
+    };
     let this_call = FlexBasisAnchor {
         generation: generation_count,
         available_width,
@@ -3233,7 +3244,10 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         reason,
         replay_pending: false,
     };
-    let anchor = if starts_anchor { this_call } else { stored };
+    let anchor = match stored {
+        Some(stored) if !starts_anchor => stored,
+        _ => this_call,
+    };
 
     // barre-only (yoga#2019): refuse an earlier layout's entry computed under
     // a different anchor, when the node has a child whose basis can be
@@ -3241,13 +3255,14 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     let mut rejected: Option<CachedResult> = None;
     if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
         let entry = cached_entry(layout, cached);
+        // The child scan runs last: it is the only part that walks children.
         if entry.generation != generation_count
             && has_children
-            && has_retainable_flex_basis_child(node)
             && !(inexact_equals(entry.anchor_available_width, anchor.available_width)
                 && inexact_equals(entry.anchor_available_height, anchor.available_height)
                 && entry.anchor_width_sizing_mode == anchor.width_sizing_mode
                 && entry.anchor_height_sizing_mode == anchor.height_sizing_mode)
+            && has_retainable_flex_basis_child(node)
         {
             rejected = Some(cached);
             cached_results = None;
