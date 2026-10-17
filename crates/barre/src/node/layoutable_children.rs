@@ -5,15 +5,6 @@
 //! children are laid out as if they were children of its parent, recursively.
 //! The iterator yields the children of a node with every `display: contents`
 //! child replaced, in place, by its own layoutable children.
-//!
-//! TICKET (display: contents): only the common case is implemented — nodes
-//! without `display: contents` children. Reaching a `display: contents` child
-//! hits `not_implemented!`. Implementing it means porting
-//! `LayoutableChildren::Iterator::next` / `skipContentsNodes` (the
-//! `backtrack_` stack) into `advance` / `skip_contents_nodes` below; nothing
-//! outside this file needs to change. Target tests:
-//! `YGDisplayContentsTest`, `YGLayoutableChildrenTest`,
-//! `YGContentsNodeHasNewLayoutTest`.
 
 use crate::enums::Display;
 use crate::node::layout_node::LayoutNode;
@@ -79,12 +70,18 @@ impl<'a, N: LayoutNode<'a>> LayoutableChildren<'a, N> {
         if self.child_index + 1 >= node.child_count() {
             // If the current node has no more children, try to backtrack and
             // visit its successor.
-            if self.backtrack.is_empty() {
+            // pop and restore the latest backtrack entry
+            match self.backtrack.pop() {
                 // If there are no nodes to backtrack to, the last node has
                 // been visited.
-                *self = LayoutableChildren::end();
-            } else {
-                crate::not_implemented!("LayoutableChildren backtracking (display: contents)");
+                None => *self = LayoutableChildren::end(),
+                Some((back_node, back_index)) => {
+                    self.node = Some(back_node);
+                    self.child_index = back_index;
+
+                    // Go to the next node.
+                    self.advance();
+                }
             }
         } else {
             // Current node has more children to visit, go to next.
@@ -99,7 +96,32 @@ impl<'a, N: LayoutNode<'a>> LayoutableChildren<'a, N> {
 
     /// `Iterator::skipContentsNodes`.
     fn skip_contents_nodes(&mut self) {
-        crate::not_implemented!("LayoutableChildren::skipContentsNodes (display: contents)");
+        let Some(mut node) = self.node else {
+            return;
+        };
+        // Get the node that would be returned from the iterator.
+        let mut current_node = node.child(self.child_index);
+        while current_node.style().display() == Display::Contents && current_node.child_count() > 0
+        {
+            // If it has display: contents set, it shouldn't be returned but
+            // its children should in its place. Push the current node and
+            // child index so that the current state can be restored when
+            // backtracking.
+            self.backtrack.push((node, self.child_index));
+            // Traverse the child.
+            node = current_node;
+            self.node = Some(node);
+            self.child_index = 0;
+
+            // Repeat until a node without display: contents is found in the
+            // subtree or a leaf is reached.
+            current_node = node.child(self.child_index);
+        }
+
+        // If no node without display: contents was found, try to backtrack.
+        if current_node.style().display() == Display::Contents {
+            self.advance();
+        }
     }
 }
 
