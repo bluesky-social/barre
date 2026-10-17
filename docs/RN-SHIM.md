@@ -13,6 +13,16 @@ generic over a node-access trait from M1** (§3.4), otherwise M5 is a rewrite.
 
 ---
 
+> **Target is RN 0.88** (Samuel, 2026-10-17: social-app is upgrading shortly; 0.88.0 is on npm).
+> The analysis below was done on 0.86.3 and still applies structurally. RN 0.88.0's
+> `ReactCommon/yoga` is only a few commits behind barre's pin (`vendor/yoga` 52f6d0bd): it has
+> errata bits 1|2|4|8 (`MinSizeUndefinedInsteadOfAuto` included) but not 16
+> (`FlexFirstPassUsesRunningTotals`, yoga#2006), and it predates the pixel-grid rounding changes
+> yoga#2037/#2040/#2041 (`PixelGrid.cpp` differs by ~130 diff lines). So: `barre-rn` masks errata
+> to bits 1|2|4|8, and an A/B against RN's Yoga will show sub-pixel rounding differences
+> that are expected (barre follows the newer rounding). Grid is present in both. Rebase the patch on
+> `react-native@0.88.x` when doing the integration; line numbers below are 0.86.3.
+
 ## 1. How RN 0.86 consumes Yoga
 
 ### 1.1 social-app's build mode
