@@ -23,7 +23,7 @@ directory without `.cpp`:
 Generated and hand-written files share some basenames (`YGAspectRatioTest`,
 `YGFlexBasisFitContentTest`), hence the `generated/` prefix. Parameterized
 tests keep gtest's names, e.g.
-`YGFlexBasisFitContentTest/AllErrata/YGFlexBasisFitContentTest.scroll_avoids_remeasure/0`.
+`YGFlexBasisFitContentTest/YogaTest/YGFlexBasisFitContentTest.scroll_avoids_remeasure/0`.
 
 A FILTER is a prefix of test IDs: `generated/`, `generated/YGFlexTest`,
 `YGMeasureTest/YogaTest.measure_once`, or a full ID. No filter = everything.

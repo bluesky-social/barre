@@ -213,7 +213,7 @@ def shash(s: str, n=10) -> str:
 
 def native_libs():
     if sys.platform == "darwin":
-        return ["-lSystem", "-lc", "-lm", "-liconv"]
+        return ["-liconv"]  # libSystem (libc, libm, pthread) is linked by default
     return ["-lpthread", "-ldl", "-lm", "-lrt", "-lutil", "-lc"]
 
 
@@ -341,19 +341,26 @@ def parse_ninja_failures(out: str):
     return fails
 
 
+UNDEF_RE = re.compile(r'^\s+"(_?[\w:$.]+)", referenced from|undefined reference to [`\'"]([^\'"`]+)', re.M)
+
+
 def build_error_reason(text: str) -> str:
     if not text:
         return "build failed"
+    syms = []
+    for m in UNDEF_RE.finditer(text):
+        sym = m.group(1) or m.group(2)
+        if sym not in syms:
+            syms.append(sym)
+    if syms:
+        return f"link: {len(syms)} undefined symbols, e.g. {', '.join(syms[:4])}"[:300]
     lines = text.splitlines()
     for ln in lines:
-        if " error: " in ln or ln.startswith("error:"):
+        if (" error: " in ln or ln.startswith("error:")) and "linker command failed" not in ln:
             return ln.strip()[:300]
-    undef = [ln for ln in lines if "Undefined symbols" in ln or "undefined reference" in ln]
-    if undef:
-        syms = [ln.strip().strip('"') for ln in lines if ln.startswith('  "')]
-        if syms:
-            return f"link: {len(syms)} undefined symbols, e.g. {', '.join(syms[:3])}"[:300]
-        return undef[0].strip()[:300]
+    for ln in lines:
+        if ln.strip() and "warning:" not in ln:
+            return ln.strip()[:300]
     return lines[0].strip()[:300]
 
 
@@ -499,7 +506,7 @@ def compile_canary_obj(build: Build, tmp: Path, rng, count):
 
 def link_canary(build: Build, tmp: Path, obj: Path, barre: bool, engine_lib: Path):
     out = tmp / ("c" + obj.stem)
-    ins = [obj, *build.common_objs(barre), engine_lib]
+    ins = [obj, build.main_obj, build.gtest_obj, engine_lib]
     cmd = [build.cxx, *map(str, ins), *(native_libs() if barre else []), "-o", str(out)]
     proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     return out, proc
@@ -860,6 +867,7 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
         and len(canary_results) > 0,
         "total": total, "in_scope": in_scope, **{k.replace("-", "_"): v for k, v in counts.items()},
         "pass_rate": round(rate, 2), "not_implemented": dict(sorted(not_impl.items(), key=lambda x: -x[1])),
+        "canary_results": {t: r[0] for t, r in sorted(canary_results.items())},
         "regressions": [t for t, _ in regressions], "new_passes": new_passes,
         "elapsed_s": round(elapsed, 2), "run_s": round(run_s, 2),
     }
@@ -883,7 +891,7 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
             shown += 1
             print(f"--- {st.upper()} {tid}: {reason}", file=out)
             tail = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("CONF-RESULT")]
-            for ln in tail[-12:]:
+            for ln in (tail[:12] if st == "build-fail" else tail[-12:]):
                 print(f"    {ln[:200]}", file=out)
     if args.by_file:
         rows = {}
