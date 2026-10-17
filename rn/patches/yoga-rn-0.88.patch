@@ -1,0 +1,1107 @@
+diff --git a/ReactCommon/yoga/yoga/YGNodeLayout.cpp b/ReactCommon/yoga/yoga/YGNodeLayout.cpp
+index 50c8766..df53484 100644
+--- a/ReactCommon/yoga/yoga/YGNodeLayout.cpp
++++ b/ReactCommon/yoga/yoga/YGNodeLayout.cpp
+@@ -6,16 +6,30 @@
+  */
+ 
+ #include <yoga/Yoga.h>
++#include <yoga/barre/BarreHost.h>
+ #include <yoga/debug/AssertFatal.h>
+ #include <yoga/enums/Edge.h>
+ #include <yoga/node/Node.h>
+ 
++#include <type_traits>
++
+ using namespace facebook;
+ using namespace facebook::yoga;
+ 
+ namespace {
+ 
+-template <auto LayoutMember>
++// barre: when barre lays this process out, a node's results are in barre's
++// state (yoga/barre/BarreHost.h), and layout_ only holds Yoga's defaults.
++template <typename Read>
++auto readLayout(const YGNodeConstRef nodeRef, Read read) {
++  const auto node = resolveRef(nodeRef);
++  if (const std::byte* state = barre::layoutState(node)) [[unlikely]] {
++    return read(barre::LayoutView{state});
++  }
++  return read(node->getLayout());
++}
++
++template <auto LayoutMember, auto BarreMember>
+ float getResolvedLayoutProperty(const YGNodeConstRef nodeRef, const Edge edge) {
+   const auto node = resolveRef(nodeRef);
+   yoga::assertFatalWithNode(
+@@ -23,78 +37,96 @@ float getResolvedLayoutProperty(const YGNodeConstRef nodeRef, const Edge edge) {
+       edge <= Edge::End,
+       "Cannot get layout properties of multi-edge shorthands");
+ 
+-  if (edge == Edge::Start) {
+-    if (node->getLayout().direction() == Direction::RTL) {
+-      return (node->getLayout().*LayoutMember)(PhysicalEdge::Right);
+-    } else {
+-      return (node->getLayout().*LayoutMember)(PhysicalEdge::Left);
++  return readLayout(nodeRef, [&](const auto& layout) {
++    using Layout = std::remove_cvref_t<decltype(layout)>;
++    constexpr auto member = [] {
++      if constexpr (std::is_same_v<Layout, barre::LayoutView>) {
++        return BarreMember;
++      } else {
++        return LayoutMember;
++      }
++    }();
++
++    if (edge == Edge::Start) {
++      if (layout.direction() == Direction::RTL) {
++        return (layout.*member)(PhysicalEdge::Right);
++      } else {
++        return (layout.*member)(PhysicalEdge::Left);
++      }
+     }
+-  }
+ 
+-  if (edge == Edge::End) {
+-    if (node->getLayout().direction() == Direction::RTL) {
+-      return (node->getLayout().*LayoutMember)(PhysicalEdge::Left);
+-    } else {
+-      return (node->getLayout().*LayoutMember)(PhysicalEdge::Right);
++    if (edge == Edge::End) {
++      if (layout.direction() == Direction::RTL) {
++        return (layout.*member)(PhysicalEdge::Left);
++      } else {
++        return (layout.*member)(PhysicalEdge::Right);
++      }
+     }
+-  }
+ 
+-  return (node->getLayout().*LayoutMember)(static_cast<PhysicalEdge>(edge));
++    return (layout.*member)(static_cast<PhysicalEdge>(edge));
++  });
+ }
+ 
+ } // namespace
+ 
+ float YGNodeLayoutGetLeft(const YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().position(PhysicalEdge::Left);
++  return readLayout(node, [](const auto& l) { return l.position(PhysicalEdge::Left); });
+ }
+ 
+ float YGNodeLayoutGetTop(const YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().position(PhysicalEdge::Top);
++  return readLayout(node, [](const auto& l) { return l.position(PhysicalEdge::Top); });
+ }
+ 
+ float YGNodeLayoutGetRight(const YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().position(PhysicalEdge::Right);
++  return readLayout(
++      node, [](const auto& l) { return l.position(PhysicalEdge::Right); });
+ }
+ 
+ float YGNodeLayoutGetBottom(const YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().position(PhysicalEdge::Bottom);
++  return readLayout(
++      node, [](const auto& l) { return l.position(PhysicalEdge::Bottom); });
+ }
+ 
+ float YGNodeLayoutGetWidth(const YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().dimension(Dimension::Width);
++  return readLayout(
++      node, [](const auto& l) { return l.dimension(Dimension::Width); });
+ }
+ 
+ float YGNodeLayoutGetHeight(const YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().dimension(Dimension::Height);
++  return readLayout(
++      node, [](const auto& l) { return l.dimension(Dimension::Height); });
+ }
+ 
+ YGDirection YGNodeLayoutGetDirection(const YGNodeConstRef node) {
+-  return unscopedEnum(resolveRef(node)->getLayout().direction());
++  return unscopedEnum(
++      readLayout(node, [](const auto& l) { return l.direction(); }));
+ }
+ 
+ bool YGNodeLayoutGetHadOverflow(const YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().hadOverflow();
++  return readLayout(node, [](const auto& l) { return l.hadOverflow(); });
+ }
+ 
+ float YGNodeLayoutGetMargin(YGNodeConstRef node, YGEdge edge) {
+-  return getResolvedLayoutProperty<&LayoutResults::margin>(
++  return getResolvedLayoutProperty<&LayoutResults::margin, &barre::LayoutView::margin>(
+       node, scopedEnum(edge));
+ }
+ 
+ float YGNodeLayoutGetBorder(YGNodeConstRef node, YGEdge edge) {
+-  return getResolvedLayoutProperty<&LayoutResults::border>(
++  return getResolvedLayoutProperty<&LayoutResults::border, &barre::LayoutView::border>(
+       node, scopedEnum(edge));
+ }
+ 
+ float YGNodeLayoutGetPadding(YGNodeConstRef node, YGEdge edge) {
+-  return getResolvedLayoutProperty<&LayoutResults::padding>(
++  return getResolvedLayoutProperty<&LayoutResults::padding, &barre::LayoutView::padding>(
+       node, scopedEnum(edge));
+ }
+ 
+ float YGNodeLayoutGetRawHeight(YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().rawDimension(Dimension::Height);
++  return readLayout(
++      node, [](const auto& l) { return l.rawDimension(Dimension::Height); });
+ }
+ 
+ float YGNodeLayoutGetRawWidth(YGNodeConstRef node) {
+-  return resolveRef(node)->getLayout().rawDimension(Dimension::Width);
++  return readLayout(
++      node, [](const auto& l) { return l.rawDimension(Dimension::Width); });
+ }
+diff --git a/ReactCommon/yoga/yoga/algorithm/CalculateLayout.cpp b/ReactCommon/yoga/yoga/algorithm/CalculateLayout.cpp
+index 4e7930a..24ed265 100644
+--- a/ReactCommon/yoga/yoga/algorithm/CalculateLayout.cpp
++++ b/ReactCommon/yoga/yoga/algorithm/CalculateLayout.cpp
+@@ -24,6 +24,7 @@
+ #include <yoga/algorithm/FlexDirection.h>
+ #include <yoga/algorithm/FlexLine.h>
+ #include <yoga/algorithm/PixelGrid.h>
++#include <yoga/barre/BarreHost.h>
+ #include <yoga/algorithm/SizingMode.h>
+ #include <yoga/algorithm/TrailingPosition.h>
+ #include <yoga/debug/AssertFatal.h>
+@@ -2851,6 +2852,20 @@ void calculateLayout(
+     const float ownerWidth,
+     const float ownerHeight,
+     const Direction ownerDirection) {
++  // barre: lay out with barre instead when it is enabled for this process
++  // (yoga/barre/BarreHost.h).
++  if (barre::enabled()) {
++    barre::calculateLayout(node, ownerWidth, ownerHeight, ownerDirection);
++    return;
++  }
++  calculateLayoutYoga(node, ownerWidth, ownerHeight, ownerDirection);
++}
++
++void calculateLayoutYoga(
++    yoga::Node* const node,
++    const float ownerWidth,
++    const float ownerHeight,
++    const Direction ownerDirection) {
+   Event::publish<Event::LayoutPassStart>(node);
+   LayoutData markerData = {};
+ 
+diff --git a/ReactCommon/yoga/yoga/algorithm/CalculateLayout.h b/ReactCommon/yoga/yoga/algorithm/CalculateLayout.h
+index 0cc7c67..18c6e1f 100644
+--- a/ReactCommon/yoga/yoga/algorithm/CalculateLayout.h
++++ b/ReactCommon/yoga/yoga/algorithm/CalculateLayout.h
+@@ -20,6 +20,14 @@ void calculateLayout(
+     float ownerHeight,
+     Direction ownerDirection);
+ 
++// Yoga's calculateLayout; calculateLayout dispatches to it unless barre is
++// enabled (yoga/barre/BarreHost.h).
++void calculateLayoutYoga(
++    yoga::Node* node,
++    float ownerWidth,
++    float ownerHeight,
++    Direction ownerDirection);
++
+ bool calculateLayoutInternal(
+     yoga::Node* node,
+     float availableWidth,
+diff --git a/ReactCommon/yoga/yoga/barre/BarreHost.cpp b/ReactCommon/yoga/yoga/barre/BarreHost.cpp
+new file mode 100644
+index 0000000..015539f
+--- /dev/null
++++ b/ReactCommon/yoga/yoga/barre/BarreHost.cpp
+@@ -0,0 +1,352 @@
++/*
++ * barre for React Native: see BarreHost.h and BarreRn.h.
++ */
++
++#include <yoga/barre/BarreHost.h>
++
++#include <array>
++#include <cstdlib>
++#include <cstring>
++#include <new>
++#include <utility>
++#include <vector>
++
++#include <yoga/YGEnums.h>
++#include <yoga/config/Config.h>
++#include <yoga/enums/Edge.h>
++#include <yoga/enums/ExperimentalFeature.h>
++#include <yoga/enums/Gutter.h>
++#include <yoga/enums/MeasureMode.h>
++#include <yoga/style/Style.h>
++
++#ifdef __ANDROID__
++#include <android/log.h>
++#include <sys/system_properties.h>
++#endif
++
++namespace facebook::yoga {
++
++namespace {
++
++// barre reads std::vector<Node*> as {begin, end, capacity end} (libc++).
++static_assert(sizeof(std::vector<Node*>) == 3 * sizeof(Node*));
++static_assert(sizeof(FloatOptional) == sizeof(float));
++
++void barreLog(const char* message) {
++#ifdef __ANDROID__
++  __android_log_print(ANDROID_LOG_WARN, "barre", "%s", message);
++#else
++  fprintf(stderr, "barre: %s\n", message);
++#endif
++}
++
++template <typename T>
++uint32_t offsetIn(const void* base, const T* field) {
++  return static_cast<uint32_t>(
++      reinterpret_cast<const std::byte*>(field) -
++      reinterpret_cast<const std::byte*>(base));
++}
++
++BarreRnLength length(const YGValue& value) {
++  return BarreRnLength{value.value, static_cast<uint8_t>(value.unit)};
++}
++
++template <typename Get>
++uint16_t edges(BarreRnLength (&out)[9], Get get) {
++  uint16_t defined = 0;
++  for (size_t i = 0; i < 9; i++) {
++    out[i] = length(get(static_cast<Edge>(i)));
++    if (out[i].unit != YGUnitUndefined) {
++      defined |= static_cast<uint16_t>(1u << i);
++    }
++  }
++  return defined;
++}
++
++void flattenStyle(const void* nodeRef, BarreRnStyle* out) {
++  const Style& s = static_cast<const Node*>(nodeRef)->style();
++  out->direction = static_cast<uint8_t>(s.direction());
++  out->flex_direction = static_cast<uint8_t>(s.flexDirection());
++  out->justify_content = static_cast<uint8_t>(s.justifyContent());
++  out->justify_items = static_cast<uint8_t>(s.justifyItems());
++  out->justify_self = static_cast<uint8_t>(s.justifySelf());
++  out->align_content = static_cast<uint8_t>(s.alignContent());
++  out->align_items = static_cast<uint8_t>(s.alignItems());
++  out->align_self = static_cast<uint8_t>(s.alignSelf());
++  out->position_type = static_cast<uint8_t>(s.positionType());
++  out->flex_wrap = static_cast<uint8_t>(s.flexWrap());
++  out->overflow = static_cast<uint8_t>(s.overflow());
++  out->display = static_cast<uint8_t>(s.display());
++  out->box_sizing = static_cast<uint8_t>(s.boxSizing());
++  out->flex = s.flex().unwrap();
++  out->flex_grow = s.flexGrow().unwrap();
++  out->flex_shrink = s.flexShrink().unwrap();
++  out->aspect_ratio = s.aspectRatio().unwrap();
++  out->flex_basis = length(static_cast<YGValue>(s.flexBasis()));
++  out->defined_margin = edges(out->margin, [&](Edge e) {
++    return static_cast<YGValue>(s.margin(e));
++  });
++  out->defined_position = edges(out->position, [&](Edge e) {
++    return static_cast<YGValue>(s.position(e));
++  });
++  out->defined_padding = edges(out->padding, [&](Edge e) {
++    return static_cast<YGValue>(s.padding(e));
++  });
++  out->defined_border = edges(out->border, [&](Edge e) {
++    return static_cast<YGValue>(s.border(e));
++  });
++  for (size_t i = 0; i < 3; i++) {
++    out->gap[i] = length(static_cast<YGValue>(s.gap(static_cast<Gutter>(i))));
++  }
++  for (size_t i = 0; i < 2; i++) {
++    auto d = static_cast<Dimension>(i);
++    out->dimensions[i] = length(static_cast<YGValue>(s.dimension(d)));
++    out->min_dimensions[i] = length(static_cast<YGValue>(s.minDimension(d)));
++    out->max_dimensions[i] = length(static_cast<YGValue>(s.maxDimension(d)));
++  }
++}
++
++void readConfig(const void* configRef, BarreRnConfig* out) {
++  const auto* config = static_cast<const Config*>(configRef);
++  out->errata = static_cast<uint32_t>(config->getErrata());
++  uint32_t features = 0;
++  for (size_t i = 0; i < ordinalCount<ExperimentalFeature>(); i++) {
++    if (config->isExperimentalFeatureEnabled(
++            static_cast<ExperimentalFeature>(i))) {
++      features |= 1u << i;
++    }
++  }
++  out->experimental_features = features;
++  out->point_scale_factor = config->getPointScaleFactor();
++  out->use_web_defaults = config->useWebDefaults();
++}
++
++void markDirty(void* node) {
++  static_cast<Node*>(node)->setDirty(true);
++}
++
++void cloneChildrenIfNeeded(void* node) {
++  static_cast<Node*>(node)->cloneChildrenIfNeeded();
++}
++
++void cloneContentsChildrenIfNeeded(void* node) {
++  static_cast<Node*>(node)->cloneContentsChildrenIfNeeded();
++}
++
++BarreRnSize measure(
++    void* node,
++    float width,
++    uint8_t widthMode,
++    float height,
++    uint8_t heightMode) {
++  YGSize size = static_cast<Node*>(node)->measure(
++      width,
++      static_cast<MeasureMode>(widthMode),
++      height,
++      static_cast<MeasureMode>(heightMode));
++  return BarreRnSize{size.width, size.height};
++}
++
++BarreRnSize measureMinContent(
++    void* node,
++    float width,
++    uint8_t widthMode,
++    float height,
++    uint8_t heightMode) {
++  YGSize size = static_cast<Node*>(node)->measureMinContent(
++      width,
++      static_cast<MeasureMode>(widthMode),
++      height,
++      static_cast<MeasureMode>(heightMode));
++  return BarreRnSize{size.width, size.height};
++}
++
++float baseline(void* node, float width, float height) {
++  return static_cast<const Node*>(node)->baseline(width, height);
++}
++
++// Finds the one bit a flag setter changes, by constructing two nodes in
++// zeroed memory and toggling the flag on one of them. `setOn` sets the flag
++// to the value the bit represents when set (true, or NodeType::Text).
++template <typename Toggle>
++bool probeFlag(
++    uint32_t flagsEnd,
++    bool toggledTurnsOn,
++    Toggle toggle,
++    BarreRnFlag* out) {
++  alignas(Node) std::byte a[sizeof(Node)];
++  alignas(Node) std::byte b[sizeof(Node)];
++  std::memset(a, 0, sizeof(a));
++  std::memset(b, 0, sizeof(b));
++  Node* na = new (a) Node();
++  Node* nb = new (b) Node();
++  toggle(*nb);
++  int found = 0;
++  for (uint32_t i = 0; i < flagsEnd; i++) {
++    auto diff = static_cast<uint8_t>(a[i] ^ b[i]);
++    if (diff != 0) {
++      found++;
++      out->offset = i;
++      out->mask = diff;
++    }
++  }
++  bool ok = found == 1 && (out->mask & (out->mask - 1)) == 0;
++  if (ok) {
++    // the bit must be set in whichever node has the flag on
++    const std::byte* on = toggledTurnsOn ? b : a;
++    ok = (static_cast<uint8_t>(on[out->offset]) & out->mask) != 0;
++  }
++  na->~Node();
++  nb->~Node();
++  return ok;
++}
++
++} // namespace
++
++const BarreRnHost* BarreHostAccess::host() {
++  static const BarreRnHost* const host = []() -> const BarreRnHost* {
++    static BarreRnHost h{};
++    h.abi_version = BARRE_RN_ABI_VERSION;
++    h.struct_size = sizeof(BarreRnHost);
++    h.state_capacity = BARRE_RN_STATE_SIZE;
++
++    Node probe;
++    h.node_state = offsetIn(&probe, &probe.barreState_);
++    h.node_children = offsetIn(&probe, &probe.children_);
++    h.node_owner = offsetIn(&probe, &probe.owner_);
++    h.node_config = offsetIn(&probe, &probe.config_);
++    h.node_contents_children_count =
++        offsetIn(&probe, &probe.contentsChildrenCount_);
++    h.node_measure_func = offsetIn(&probe, &probe.measureFunc_);
++    h.node_min_content_measure_func =
++        offsetIn(&probe, &probe.minContentMeasureFunc_);
++    h.node_baseline_func = offsetIn(&probe, &probe.baselineFunc_);
++    h.node_min_content_width = offsetIn(&probe, &probe.minContentWidth_);
++    h.node_min_content_height = offsetIn(&probe, &probe.minContentHeight_);
++
++    // children_ must be {begin, end, ...}
++    Node c0, c1;
++    probe.setChildren({&c0, &c1});
++    auto words = reinterpret_cast<Node* const* const*>(
++        reinterpret_cast<const std::byte*>(&probe) + h.node_children);
++    const bool vectorOk = words[0] == probe.getChildren().data() &&
++        words[1] == probe.getChildren().data() + 2;
++    probe.setChildren({});
++
++    // the flags are bitfields before context_
++    const uint32_t flagsEnd = offsetIn(&probe, &probe.context_);
++    const bool flagsOk =
++        probeFlag(
++            flagsEnd,
++            false,
++            [](Node& n) { n.setDirty(false); },
++            &h.flag_dirty) &&
++        probeFlag(
++            flagsEnd,
++            false,
++            [](Node& n) { n.setHasNewLayout(false); },
++            &h.flag_has_new_layout) &&
++        probeFlag(
++            flagsEnd,
++            true,
++            [](Node& n) { n.setIsReferenceBaseline(true); },
++            &h.flag_reference_baseline) &&
++        probeFlag(
++            flagsEnd,
++            true,
++            [](Node& n) { n.setAlwaysFormsContainingBlock(true); },
++            &h.flag_always_forms_containing_block) &&
++        probeFlag(
++            flagsEnd,
++            true,
++            [](Node& n) { n.setNodeType(NodeType::Text); },
++            &h.flag_node_type_text);
++
++    Config config{nullptr};
++    h.config_version = offsetIn(&config, &config.version_);
++
++    h.flatten_style = flattenStyle;
++    h.read_config = readConfig;
++    h.mark_dirty = markDirty;
++    h.clone_children_if_needed = cloneChildrenIfNeeded;
++    h.clone_contents_children_if_needed = cloneContentsChildrenIfNeeded;
++    h.measure = measure;
++    h.measure_min_content = measureMinContent;
++    h.baseline = baseline;
++
++    if (!vectorOk) {
++      barreLog("unexpected std::vector layout");
++      return nullptr;
++    }
++    if (!flagsOk) {
++      barreLog("could not locate yoga::Node's flag bits");
++      return nullptr;
++    }
++    if (h.node_state % BARRE_RN_STATE_ALIGN != 0) {
++      barreLog("barre state is misaligned");
++      return nullptr;
++    }
++    return &h;
++  }();
++  return host;
++}
++
++namespace barre {
++namespace detail {
++
++BarreRnLayoutOffsets gLayoutOffsets{};
++
++#ifdef BARRE_RN
++namespace {
++bool requested() {
++#ifdef __ANDROID__
++  char value[PROP_VALUE_MAX] = {};
++  __system_property_get("debug.barre.layout", value);
++  return value[0] == '1';
++#else
++  const char* value = std::getenv("BARRE_LAYOUT");
++  return value != nullptr && value[0] == '1';
++#endif
++}
++} // namespace
++
++bool computeEnabled() {
++  if (!requested()) {
++    return false;
++  }
++  const BarreRnHost* host = BarreHostAccess::host();
++  if (host == nullptr || !barre_rn_init(host)) {
++    // Never fall back silently: an A/B run would compare Yoga with itself.
++    barreLog("barre requested but its host interface does not match this build");
++    std::abort();
++  }
++  gLayoutOffsets = barre_rn_layout_offsets();
++  barreLog("laying out with barre");
++  return true;
++}
++#else
++bool computeEnabled() {
++  return false;
++}
++#endif
++
++} // namespace detail
++
++void calculateLayout(
++    Node* node,
++    float ownerWidth,
++    float ownerHeight,
++    Direction ownerDirection) {
++#ifdef BARRE_RN
++  barre_rn_calculate_layout(
++      node, ownerWidth, ownerHeight, static_cast<uint8_t>(ownerDirection));
++#else
++  (void)node;
++  (void)ownerWidth;
++  (void)ownerHeight;
++  (void)ownerDirection;
++#endif
++}
++
++} // namespace barre
++} // namespace facebook::yoga
+diff --git a/ReactCommon/yoga/yoga/barre/BarreHost.h b/ReactCommon/yoga/yoga/barre/BarreHost.h
+new file mode 100644
+index 0000000..507d921
+--- /dev/null
++++ b/ReactCommon/yoga/yoga/barre/BarreHost.h
+@@ -0,0 +1,121 @@
++/*
++ * barre for React Native (yoga/barre/BarreRn.h): the C++ side. Owns the
++ * runtime switch between Yoga's algorithm and barre's, the host vtable barre
++ * walks yoga::Nodes through, and direct reads of barre's layout results for
++ * the YGNodeLayoutGet* API.
++ *
++ * Built into every Yoga build; barre itself is only linked when BARRE_RN is
++ * defined (the barre-rn staticlib is available). Without it, enabled() is
++ * always false and Yoga runs unchanged.
++ */
++
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++#include <yoga/barre/BarreRn.h>
++#include <yoga/enums/Dimension.h>
++#include <yoga/enums/Direction.h>
++#include <yoga/enums/PhysicalEdge.h>
++#include <yoga/node/Node.h>
++
++namespace facebook::yoga {
++
++struct BarreHostAccess {
++  static const std::byte* state(const Node& node) {
++    return node.barreState_;
++  }
++  static const BarreRnHost* host();
++};
++
++namespace barre {
++
++namespace detail {
++bool computeEnabled();
++extern BarreRnLayoutOffsets gLayoutOffsets;
++} // namespace detail
++
++/*
++ * Whether this process lays out with barre. Decided once, on first use:
++ * iOS/macOS reads the BARRE_LAYOUT environment variable (simulator:
++ * SIMCTL_CHILD_BARRE_LAYOUT=1), Android the debug.barre.layout system
++ * property. Never changes afterwards: Yoga's and barre's caches would go
++ * stale relative to each other.
++ */
++inline bool enabled() {
++#ifdef BARRE_RN
++  static const bool on = detail::computeEnabled();
++  return on;
++#else
++  return false;
++#endif
++}
++
++/*
++ * barre's layout results for `node`, or null when the node's results live in
++ * Yoga's LayoutResults: barre is off, or barre has not laid the node out
++ * since it was created or reset (Yoga's defaults are in layout_ then).
++ */
++class LayoutView {
++ public:
++  explicit LayoutView(const std::byte* state) : state_(state) {}
++
++  Direction direction() const {
++    return static_cast<Direction>(
++        *reinterpret_cast<const uint8_t*>(state_ + off().direction));
++  }
++  bool hadOverflow() const {
++    return *reinterpret_cast<const bool*>(state_ + off().had_overflow);
++  }
++  float dimension(Dimension axis) const {
++    return floats(off().dimensions)[static_cast<size_t>(axis)];
++  }
++  float rawDimension(Dimension axis) const {
++    return floats(off().raw_dimensions)[static_cast<size_t>(axis)];
++  }
++  float position(PhysicalEdge edge) const {
++    return floats(off().position)[static_cast<size_t>(edge)];
++  }
++  float margin(PhysicalEdge edge) const {
++    return floats(off().margin)[static_cast<size_t>(edge)];
++  }
++  float border(PhysicalEdge edge) const {
++    return floats(off().border)[static_cast<size_t>(edge)];
++  }
++  float padding(PhysicalEdge edge) const {
++    return floats(off().padding)[static_cast<size_t>(edge)];
++  }
++
++ private:
++  static const BarreRnLayoutOffsets& off() {
++    return detail::gLayoutOffsets;
++  }
++  const float* floats(uint32_t offset) const {
++    return reinterpret_cast<const float*>(state_ + offset);
++  }
++  const std::byte* state_;
++};
++
++inline const std::byte* layoutState(const Node* node) {
++  if (!enabled()) {
++    return nullptr;
++  }
++  const std::byte* state = BarreHostAccess::state(*node);
++  auto header = reinterpret_cast<const BarreRnStateHeader*>(state);
++  if (header->initialized == 0 ||
++      (header->pending & BARRE_RN_PENDING_LAYOUT_RESET) != 0) {
++    return nullptr;
++  }
++  return state;
++}
++
++/* yoga::calculateLayout with barre. Only valid when enabled(). */
++void calculateLayout(
++    Node* node,
++    float ownerWidth,
++    float ownerHeight,
++    Direction ownerDirection);
++
++} // namespace barre
++} // namespace facebook::yoga
+diff --git a/ReactCommon/yoga/yoga/barre/BarreRn.h b/ReactCommon/yoga/yoga/barre/BarreRn.h
+new file mode 100644
+index 0000000..6e436d2
+--- /dev/null
++++ b/ReactCommon/yoga/yoga/barre/BarreRn.h
+@@ -0,0 +1,189 @@
++/*
++ * barre (https://github.com/bluesky-social/barre) for React Native: the C
++ * interface between Yoga's C++ nodes and barre-rn, the Rust staticlib that
++ * replaces yoga::calculateLayout when enabled. barre-rn mirrors these
++ * definitions (crates/barre-rn/src/host.rs) and checks `struct_size` and
++ * `abi_version` at init.
++ *
++ * Every yoga::Node reserves BARRE_RN_STATE_SIZE bytes (Node::barreState_)
++ * for barre's per-node state: a header (below), snapshots of the node's style
++ * and config, and barre's layout results and caches. It is plain data, so
++ * copying a node (RN clones shadow nodes by copy-constructing yoga::Node)
++ * copies barre's caches exactly as it copies Yoga's.
++ */
++
++#pragma once
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define BARRE_RN_ABI_VERSION 2
++/* Bytes reserved in every yoga::Node (>= barre_rn_state_size()). */
++#define BARRE_RN_STATE_SIZE 1280
++#define BARRE_RN_STATE_ALIGN 16
++
++/* BarreRnStateHeader::pending bits, set by C++ when something barre keeps a
++ * copy of changes, or when Yoga would reset state barre keeps its own copy
++ * of. barre applies them on the next visit. */
++#define BARRE_RN_PENDING_LAYOUT_RESET 1u /* Node::setLayout */
++#define BARRE_RN_PENDING_FLEX_BASIS_RESET 2u /* Node::markDirtyAndPropagate */
++#define BARRE_RN_PENDING_STYLE 4u /* any mutable access to the style */
++#define BARRE_RN_PENDING_CONFIG 8u /* Node::setConfig */
++
++/* The first bytes of a node's barre state. An all-zero state (a new or reset
++ * node) is uninitialised; barre initialises it on first use. */
++typedef struct BarreRnStateHeader {
++  uint32_t initialized;
++  uint32_t pending;
++  /* The last layout pass that checked this state: within a pass, a node is
++   * checked once (styles and configs do not change during layout). */
++  uint32_t pass;
++  /* Config::version_ and the config the config snapshot was taken from
++   * (configs can change without touching their nodes). */
++  uint32_t config_version;
++  const void* config;
++} BarreRnStateHeader;
++
++/* A style value: `unit` is a YGUnit, `value` NaN for keywords/undefined. */
++typedef struct BarreRnLength {
++  float value;
++  uint8_t unit;
++} BarreRnLength;
++
++/* yoga::Style, flattened. Enums are their YG* C values; floats are NaN when
++ * undefined. Edge arrays are indexed by YGEdge, gap by YGGutter, dimensions by
++ * YGDimension. `defined_edges` has bit (YGEdge) set for every defined
++ * margin/position/padding/border entry (one byte each), so barre can skip the
++ * undefined ones. */
++typedef struct BarreRnStyle {
++  uint8_t direction;
++  uint8_t flex_direction;
++  uint8_t justify_content;
++  uint8_t justify_items;
++  uint8_t justify_self;
++  uint8_t align_content;
++  uint8_t align_items;
++  uint8_t align_self;
++  uint8_t position_type;
++  uint8_t flex_wrap;
++  uint8_t overflow;
++  uint8_t display;
++  uint8_t box_sizing;
++  float flex;
++  float flex_grow;
++  float flex_shrink;
++  float aspect_ratio;
++  BarreRnLength flex_basis;
++  uint16_t defined_margin;
++  uint16_t defined_position;
++  uint16_t defined_padding;
++  uint16_t defined_border;
++  BarreRnLength margin[9];
++  BarreRnLength position[9];
++  BarreRnLength padding[9];
++  BarreRnLength border[9];
++  BarreRnLength gap[3];
++  BarreRnLength dimensions[2];
++  BarreRnLength min_dimensions[2];
++  BarreRnLength max_dimensions[2];
++} BarreRnStyle;
++
++/* yoga::Config, the parts layout reads. `experimental_features` has bit
++ * (YGExperimentalFeature) set per enabled feature. */
++typedef struct BarreRnConfig {
++  uint32_t errata;
++  uint32_t experimental_features;
++  float point_scale_factor;
++  bool use_web_defaults;
++} BarreRnConfig;
++
++typedef struct BarreRnSize {
++  float width;
++  float height;
++} BarreRnSize;
++
++/* A one-bit flag of yoga::Node (a bitfield): byte offset and mask. */
++typedef struct BarreRnFlag {
++  uint32_t offset;
++  uint8_t mask;
++} BarreRnFlag;
++
++/* What barre needs from the host. Node fields barre reads on its hot path
++ * are described by byte offsets into yoga::Node (computed by the host at
++ * init from a probe node), so the common path never calls back into C++. */
++typedef struct BarreRnHost {
++  uint32_t abi_version;
++  uint32_t struct_size; /* sizeof(BarreRnHost) */
++  uint32_t state_capacity; /* BARRE_RN_STATE_SIZE */
++
++  /* yoga::Node layout */
++  uint32_t node_state; /* barreState_ (BARRE_RN_STATE_ALIGN-aligned) */
++  uint32_t node_children; /* std::vector<Node*>: {begin, end, capacity} */
++  uint32_t node_owner; /* Node* */
++  uint32_t node_config; /* const Config* */
++  uint32_t node_contents_children_count; /* size_t */
++  uint32_t node_measure_func; /* function pointers, null when unset */
++  uint32_t node_min_content_measure_func;
++  uint32_t node_baseline_func;
++  uint32_t node_min_content_width; /* FloatOptional (float, NaN = unset) */
++  uint32_t node_min_content_height;
++  BarreRnFlag flag_dirty;
++  BarreRnFlag flag_has_new_layout;
++  BarreRnFlag flag_reference_baseline;
++  BarreRnFlag flag_always_forms_containing_block;
++  BarreRnFlag flag_node_type_text;
++  /* yoga::Config layout */
++  uint32_t config_version; /* uint32_t version_ */
++
++  /* Calls. `node` is a yoga::Node*, `config` a yoga::Config*. */
++  void (*flatten_style)(const void* node, BarreRnStyle* out);
++  void (*read_config)(const void* config, BarreRnConfig* out);
++  /* Node::setDirty(true): runs the dirtied callback. (barre clears the flag
++   * itself: setDirty(false) has no side effect.) */
++  void (*mark_dirty)(void* node);
++  void (*clone_children_if_needed)(void* node);
++  void (*clone_contents_children_if_needed)(void* node);
++  BarreRnSize (*measure)(void* node, float width, uint8_t width_mode, float height, uint8_t height_mode);
++  BarreRnSize (*measure_min_content)(void* node, float width, uint8_t width_mode, float height, uint8_t height_mode);
++  float (*baseline)(void* node, float width, float height);
++} BarreRnHost;
++
++/* Byte offsets, within a node's state, of barre's layout results, so the C
++ * API's YGNodeLayoutGet* read them without calling into Rust. Arrays of
++ * float: position/margin/border/padding indexed by physical edge (left, top,
++ * right, bottom), dimensions/raw_dimensions by YGDimension. `direction` is a
++ * uint8_t YGDirection, `had_overflow` a bool. */
++typedef struct BarreRnLayoutOffsets {
++  uint32_t direction;
++  uint32_t had_overflow;
++  uint32_t dimensions;
++  uint32_t raw_dimensions;
++  uint32_t position;
++  uint32_t margin;
++  uint32_t border;
++  uint32_t padding;
++} BarreRnLayoutOffsets;
++
++/* barre-rn's exports. */
++
++/* Validates and stores the host. Returns false (and barre must not be used)
++ * if the host's ABI, layout or state capacity does not match this build. */
++bool barre_rn_init(const BarreRnHost* host);
++/* Size of barre's per-node state (<= BARRE_RN_STATE_SIZE). */
++size_t barre_rn_state_size(void);
++BarreRnLayoutOffsets barre_rn_layout_offsets(void);
++/* yoga::calculateLayout, by barre. */
++void barre_rn_calculate_layout(
++    void* node,
++    float owner_width,
++    float owner_height,
++    uint8_t owner_direction);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/ReactCommon/yoga/yoga/config/Config.h b/ReactCommon/yoga/yoga/config/Config.h
+index 2f829fb..e466687 100644
+--- a/ReactCommon/yoga/yoga/config/Config.h
++++ b/ReactCommon/yoga/yoga/config/Config.h
+@@ -69,6 +69,8 @@ class YG_EXPORT Config : public ::YGConfig {
+   static const Config& getDefault();
+ 
+  private:
++  friend struct BarreHostAccess;
++
+   YGCloneNodeFunc cloneNodeCallback_{nullptr};
+   YGLogger logger_{};
+ 
+diff --git a/ReactCommon/yoga/yoga/node/Node.cpp b/ReactCommon/yoga/yoga/node/Node.cpp
+index 692d33d..2900142 100644
+--- a/ReactCommon/yoga/yoga/node/Node.cpp
++++ b/ReactCommon/yoga/yoga/node/Node.cpp
+@@ -6,8 +6,10 @@
+  */
+ 
+ #include <algorithm>
++#include <cstring>
+ #include <cstddef>
+ #include <iostream>
++#include <utility>
+ 
+ #include <yoga/algorithm/FlexDirection.h>
+ #include <yoga/debug/AssertFatal.h>
+@@ -49,6 +51,7 @@ Node::Node(Node&& node) noexcept
+       children_(std::move(node.children_)),
+       config_(node.config_),
+       processedDimensions_(node.processedDimensions_) {
++  std::memcpy(barreState_, node.barreState_, sizeof(barreState_));
+   for (auto c : children_) {
+     c->setOwner(this);
+   }
+@@ -150,12 +153,12 @@ void Node::setMeasureFunc(YGMeasureFunc measureFunc) {
+ 
+ void Node::replaceChild(Node* child, size_t index) {
+   auto previousChild = children_[index];
+-  if (previousChild->style().display() == Display::Contents &&
+-      child->style().display() != Display::Contents) {
++  if (std::as_const(*previousChild).style().display() == Display::Contents &&
++      std::as_const(*child).style().display() != Display::Contents) {
+     contentsChildrenCount_--;
+   } else if (
+-      previousChild->style().display() != Display::Contents &&
+-      child->style().display() == Display::Contents) {
++      std::as_const(*previousChild).style().display() != Display::Contents &&
++      std::as_const(*child).style().display() == Display::Contents) {
+     contentsChildrenCount_++;
+   }
+ 
+@@ -163,12 +166,12 @@ void Node::replaceChild(Node* child, size_t index) {
+ }
+ 
+ void Node::replaceChild(Node* oldChild, Node* newChild) {
+-  if (oldChild->style().display() == Display::Contents &&
+-      newChild->style().display() != Display::Contents) {
++  if (std::as_const(*oldChild).style().display() == Display::Contents &&
++      std::as_const(*newChild).style().display() != Display::Contents) {
+     contentsChildrenCount_--;
+   } else if (
+-      oldChild->style().display() != Display::Contents &&
+-      newChild->style().display() == Display::Contents) {
++      std::as_const(*oldChild).style().display() != Display::Contents &&
++      std::as_const(*newChild).style().display() == Display::Contents) {
+     contentsChildrenCount_++;
+   }
+ 
+@@ -176,7 +179,7 @@ void Node::replaceChild(Node* oldChild, Node* newChild) {
+ }
+ 
+ void Node::insertChild(Node* child, size_t index) {
+-  if (child->style().display() == Display::Contents) {
++  if (std::as_const(*child).style().display() == Display::Contents) {
+     contentsChildrenCount_++;
+   }
+ 
+@@ -201,6 +204,7 @@ void Node::setConfig(yoga::Config* config) {
+   }
+ 
+   config_ = config;
++  barrePend(BARRE_RN_PENDING_CONFIG);
+ }
+ 
+ void Node::setDirty(bool isDirty) {
+@@ -218,7 +222,7 @@ void Node::setChildren(const std::vector<Node*>& children) {
+ 
+   contentsChildrenCount_ = 0;
+   for (const auto& child : children) {
+-    if (child->style().display() == Display::Contents) {
++    if (std::as_const(*child).style().display() == Display::Contents) {
+       contentsChildrenCount_++;
+     }
+   }
+@@ -227,7 +231,7 @@ void Node::setChildren(const std::vector<Node*>& children) {
+ bool Node::removeChild(Node* child) {
+   auto p = std::find(children_.begin(), children_.end(), child);
+   if (p != children_.end()) {
+-    if (child->style().display() == Display::Contents) {
++    if (std::as_const(*child).style().display() == Display::Contents) {
+       contentsChildrenCount_--;
+     }
+ 
+@@ -238,7 +242,7 @@ bool Node::removeChild(Node* child) {
+ }
+ 
+ void Node::removeChild(size_t index) {
+-  if (children_[index]->style().display() == Display::Contents) {
++  if (std::as_const(*children_[index]).style().display() == Display::Contents) {
+     contentsChildrenCount_--;
+   }
+ 
+@@ -424,7 +428,8 @@ void Node::cloneChildrenIfNeeded() {
+       child = resolveRef(config_->cloneNode(child, this, i));
+       child->setOwner(this);
+ 
+-      if (child->style().display() == Display::Contents) [[unlikely]] {
++      if (std::as_const(*child).style().display() == Display::Contents)
++          [[unlikely]] {
+         // The contents node's children are treated as children of the
+         // contents node's parent for layout purposes, so they need
+         // to be cloned as well.
+@@ -440,7 +445,7 @@ void Node::cloneChildrenIfNeeded() {
+ void Node::cloneContentsChildrenIfNeeded() {
+   size_t i = 0;
+   for (Node*& child : children_) {
+-    if (child->style().display() == Display::Contents &&
++    if (std::as_const(*child).style().display() == Display::Contents &&
+         child->getOwner() != this) {
+       child = resolveRef(config_->cloneNode(child, this, i));
+       child->setOwner(this);
+@@ -454,6 +459,7 @@ void Node::markDirtyAndPropagate() {
+   if (!isDirty_) {
+     setDirty(true);
+     setLayoutComputedFlexBasis(FloatOptional());
++    barrePend(BARRE_RN_PENDING_FLEX_BASIS_RESET);
+     if (owner_ != nullptr) {
+       owner_->markDirtyAndPropagate();
+     }
+diff --git a/ReactCommon/yoga/yoga/node/Node.h b/ReactCommon/yoga/yoga/node/Node.h
+index 74fd2c2..74745b3 100644
+--- a/ReactCommon/yoga/yoga/node/Node.h
++++ b/ReactCommon/yoga/yoga/node/Node.h
+@@ -7,11 +7,13 @@
+ 
+ #pragma once
+ 
++#include <cstddef>
+ #include <cstdint>
+ #include <cstdio>
+ #include <vector>
+ 
+ #include <yoga/Yoga.h>
++#include <yoga/barre/BarreRn.h>
+ #include <yoga/node/LayoutableChildren.h>
+ 
+ #include <yoga/config/Config.h>
+@@ -123,7 +125,12 @@ class YG_EXPORT Node : public ::YGNode {
+   }
+ 
+   // For Performance reasons passing as reference.
++  //
++  // barre: callers may write the style through this reference (RN's
++  // layoutTree sets the root's min/max size this way, without dirtying the
++  // node), so every mutable access invalidates barre's style snapshot.
+   Style& style() {
++    barrePend(BARRE_RN_PENDING_STYLE);
+     return style_;
+   }
+ 
+@@ -259,11 +266,13 @@ class YG_EXPORT Node : public ::YGNode {
+   }
+ 
+   void setStyle(const Style& style) {
++    barrePend(BARRE_RN_PENDING_STYLE);
+     style_ = style;
+   }
+ 
+   void setLayout(const LayoutResults& layout) {
+     layout_ = layout;
++    barrePend(BARRE_RN_PENDING_LAYOUT_RESET);
+   }
+ 
+   void setLineIndex(size_t lineIndex) {
+@@ -330,6 +339,19 @@ class YG_EXPORT Node : public ::YGNode {
+       float axisSize) const;
+ 
+  private:
++  friend struct BarreHostAccess;
++
++  // barre: tells barre that something it keeps a copy of changed, or that
++  // Yoga reset state barre keeps its own copy of (BARRE_RN_PENDING_*). A
++  // no-op while barre's state is uninitialised: initialising reads
++  // everything afresh.
++  void barrePend(uint32_t what) {
++    auto* header = reinterpret_cast<BarreRnStateHeader*>(barreState_);
++    if (header->initialized != 0) {
++      header->pending |= what;
++    }
++  }
++
+   // Used to allow resetting the node
+   Node& operator=(Node&&) noexcept = default;
+ 
+@@ -359,6 +381,9 @@ class YG_EXPORT Node : public ::YGNode {
+   const Config* config_;
+   std::array<Style::SizeLength, 2> processedDimensions_{
+       {StyleSizeLength::undefined(), StyleSizeLength::undefined()}};
++  // barre's per-node state (yoga/barre/BarreRn.h). Plain data: copied with
++  // the node, zeroed (uninitialised) in a new or reset node.
++  alignas(BARRE_RN_STATE_ALIGN) std::byte barreState_[BARRE_RN_STATE_SIZE]{};
+ };
+ 
+ inline Node* resolveRef(const YGNodeRef ref) {
