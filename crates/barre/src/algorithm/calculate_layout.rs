@@ -3275,16 +3275,44 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         }
     }
 
+    // Read before the hit path restamps the entry.
+    #[cfg(feature = "stats")]
+    let hit_earlier_generation = !need_to_visit_node
+        && cached_results.is_some_and(|c| cached_entry(layout, c).generation != generation_count);
+
     if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
         let entry = cached_entry(layout, cached);
-        // barre-only (yoga#2019): in a fresh layout this call would have run
-        // and rewritten the children's bases; it was answered from an earlier
-        // layout, so record it for replay before the next real run.
-        if has_children && starts_anchor && entry.generation != generation_count {
-            layout.flex_basis_anchor.set(FlexBasisAnchor {
-                replay_pending: true,
-                ..this_call
-            });
+        if has_children && entry.generation != generation_count {
+            // barre-only (yoga#2019): in a fresh layout this call would have
+            // run and rewritten the children's bases; it was answered from an
+            // earlier layout, so record it for replay before the next real
+            // run.
+            if starts_anchor {
+                layout.flex_basis_anchor.set(FlexBasisAnchor {
+                    replay_pending: true,
+                    ..this_call
+                });
+            }
+            // barre-only (yoga#2019): a fresh layout ran this call and stored
+            // this entry in this layout, with the anchor in effect now, so
+            // restamp it. Otherwise the next call in this layout that hits it
+            // is taken for an earlier layout's hit again, which a fresh layout
+            // does not have: it would record (and replay) the anchor a second
+            // time, after runs that rewrote the children's bases since, or be
+            // refused against an anchor that has moved on (found by the
+            // fuzzer, `barre-only-basis-mode2`).
+            let restamped = CachedMeasurement {
+                generation: generation_count,
+                anchor_available_width: anchor.available_width,
+                anchor_available_height: anchor.available_height,
+                anchor_width_sizing_mode: anchor.width_sizing_mode,
+                anchor_height_sizing_mode: anchor.height_sizing_mode,
+                ..entry
+            };
+            match cached {
+                CachedResult::Layout => layout.cached_layout.set(restamped),
+                CachedResult::Measurement(i) => layout.cached_measurements[i].set(restamped),
+            }
         }
         layout.set_measured_dimension(Dimension::Width, entry.computed_width);
         layout.set_measured_dimension(Dimension::Height, entry.computed_height);
@@ -3491,11 +3519,11 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             Outcome::Visit
         } else if rejected.is_some() {
             Outcome::Rejected
-        } else if let Some(cached) = cached_results {
-            if cached_entry(layout, cached).generation == generation_count {
-                Outcome::HitSameGen
-            } else {
+        } else if cached_results.is_some() {
+            if hit_earlier_generation {
                 Outcome::HitEarlierGen
+            } else {
+                Outcome::HitSameGen
             }
         } else {
             Outcome::Miss
