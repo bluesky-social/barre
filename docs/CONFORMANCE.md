@@ -43,7 +43,24 @@ Engine:
 - `--target-dir DIR`: `CARGO_TARGET_DIR` for that build (separate warm caches
   per slot).
 - `--lib PATH`: link this prebuilt staticlib, don't run cargo.
-- `--yoga`: link against real Yoga built from `vendor/yoga/yoga/**/*.cpp`.
+- `--yoga`: link against real Yoga built from `vendor/yoga/yoga/**/*.cpp`
+  (same as `--engine yoga`).
+- `--engine E`: `barre` (default), `yoga`, or one of the React Native engines
+  (milestone 5, docs/RN-SHIM.md), which build the suite against React
+  Native's copy of Yoga (`ReactCommon/yoga` of react-native 0.88.0, fetched
+  by `rn/fetch-react-native.sh` into `<build-dir>/rn/`, or
+  `$BARRE_RN_PRISTINE`) and compile the tests against its headers:
+  - `rn-yoga`: RN's Yoga, unmodified (the version-skew baseline);
+  - `rn-yoga-patched`: with `rn/patches/yoga-rn-0.88.patch` applied
+    (`-DBARRE_RN=1`) and `crates/barre-rn` linked, layout switch off: Yoga
+    lays out;
+  - `rn-barre`: the same binaries with `BARRE_LAYOUT=1`: barre lays out
+    through the host interface over RN's C++ nodes.
+  The patched engines' canaries (whose output is kept) must show the switch
+  in the requested position, or the run is invalid. `yoga-divergences.txt`
+  applies to `rn-yoga*` as to `--yoga`. No ratchet: `--update-expected` and
+  `--lib` are refused. RN 0.88's Yoga is older than `vendor/yoga`, so some
+  tests are expected to differ (docs/RN-SHIM.md, "Phase A").
 
 Running:
 

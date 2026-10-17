@@ -17,6 +17,10 @@ See docs/CONFORMANCE.md for the CLI contract. Outline:
    generated, built and run with every run; if any passes, the run is invalid
    (exit 3). On barre, the linked binaries are checked to contain barre's Rust
    code and none of Yoga's layout code.
+5. The rn-* engines (--engine) build the suite against React Native's copy
+   of Yoga (ReactCommon/yoga, fetched with rn/fetch-react-native.sh), stock
+   or with barre's RN patch (rn/patches/) linked against crates/barre-rn, and
+   run it with the patched build's layout switch off (Yoga) or on (barre).
 """
 
 from __future__ import annotations
@@ -47,6 +51,21 @@ STATUSES = ["pass", "fail", "crash", "timeout", "build-fail", "skip"]
 # that barre fixes) are expected to fail on Yoga.
 YOGA_STATUSES = ["xfail", "xpass"]
 MEM_EXIT_CODE = 97
+
+# --engine: what the suite is linked against and run with.
+#   barre            barre-ffi (barre's C ABI)
+#   yoga             vendor/yoga
+#   rn-yoga          React Native's ReactCommon/yoga (RN_VERSION), unmodified
+#   rn-yoga-patched  RN's Yoga with rn/patches/ applied and barre-rn linked,
+#                    layout switch off: Yoga lays out
+#   rn-barre         the same binaries, switch on (BARRE_LAYOUT=1): barre lays
+#                    out through the RN host interface
+ENGINES = ["barre", "yoga", "rn-yoga", "rn-yoga-patched", "rn-barre"]
+RN_VERSION = "0.88.0"
+RN_PATCH = RUNNER_ROOT / "rn" / "patches" / "yoga-rn-0.88.patch"
+RN_FETCH = RUNNER_ROOT / "rn" / "fetch-react-native.sh"
+# printed by the patched Yoga when the switch is on and barre initialised
+RN_BARRE_BANNER = "barre: laying out with barre"
 OUTPUT_KEEP = 4000
 
 EXIT_OK, EXIT_REGRESSION, EXIT_ERROR, EXIT_INVALID = 0, 1, 2, 3
@@ -82,6 +101,9 @@ def parse_args(argv):
                    help="test ID prefixes, e.g. generated/YGFlexTest or YGMeasureTest/YogaTest.foo")
     eng = p.add_argument_group("engine")
     eng.add_argument("--yoga", action="store_true", help="link against real Yoga built from vendor/yoga")
+    eng.add_argument("--engine", choices=ENGINES, default=None,
+                     help="engine to link and run against (default barre; --yoga = --engine yoga); "
+                          "rn-* use React Native's Yoga (docs/CONFORMANCE.md)")
     eng.add_argument("--release", action="store_true", help="build barre-ffi with --release")
     eng.add_argument("--engine-root", type=Path, default=None,
                      help="cargo workspace to build barre-ffi from (default: this checkout)")
@@ -110,10 +132,18 @@ def parse_args(argv):
                      help="rewrite the baseline (default conformance/expected-pass.txt) with this run's passes")
     out.add_argument("--quiet", "-q", action="store_true", help="no progress output")
     a = p.parse_args(argv)
-    if a.yoga and (a.release or a.engine_root or a.target_dir or a.lib):
+    if a.yoga and a.engine not in (None, "yoga"):
+        p.error("--yoga conflicts with --engine " + a.engine)
+    a.engine = "yoga" if a.yoga else (a.engine or "barre")
+    # Yoga-like engines: yoga-divergences.txt applies, no barre symbol checks
+    a.yoga = a.engine in ("yoga", "rn-yoga", "rn-yoga-patched")
+    a.rn = a.engine.startswith("rn-")
+    if a.rn and (a.lib or a.update_expected):
+        p.error(f"--engine {a.engine} cannot be combined with --lib or --update-expected")
+    if a.engine in ("yoga", "rn-yoga") and (a.release or a.engine_root or a.target_dir or a.lib):
         p.error("--yoga cannot be combined with barre build options")
     if a.update_expected and a.yoga:
-        p.error("--update-expected records barre's passes; it cannot be used with --yoga")
+        p.error("--update-expected records barre's passes; it cannot be used with --yoga or rn-*")
     if a.update_expected and a.no_skip:
         p.error("--update-expected cannot be used with --no-skip")
     a.canaries = max(1, a.canaries)
@@ -278,13 +308,23 @@ class Build:
         self.yoga_lib = build_dir / "yoga" / "libyoga.a"
         self.yoga_srcs = sorted((yoga / "yoga").rglob("*.cpp"))
         self.obj = obj
+        self.tests_obj = obj
+        self.rn = None
+        if args.rn:
+            # React Native's Yoga: the suite and the library compile against
+            # its headers, in their own object dirs.
+            self.rn = rn_tree(build_dir, patched=args.engine != "rn-yoga")
+            self.tests_obj = obj / ("rn-" + self.rn["tag"])
+            self.test_includes = [f"-I{self.rn['root']}", f"-I{yoga / 'tests'}", f"-I{gtest / 'include'}"]
+            self.util_obj = self.tests_obj / "util" / "TestUtil.o"
+            self.yoga_lib = build_dir / "rn" / self.rn["tag"] / "librnyoga.a"
 
     def test_obj(self, key):
         if key.startswith("barre/"):
             # barre's own tests come from the runner's checkout, which differs
             # between the main checkout and worktrees sharing this build dir.
-            return self.obj / ("barre-" + shash(str(CONF_DIR))) / (key[len("barre/"):] + ".o")
-        return self.obj / "tests" / (key + ".o")
+            return self.tests_obj / ("barre-" + shash(str(CONF_DIR))) / (key[len("barre/"):] + ".o")
+        return self.tests_obj / "tests" / (key + ".o")
 
     def bin_dir(self, variant):
         return self.dir / "bin" / variant
@@ -298,7 +338,7 @@ class Build:
             objs.append(self.shim_obj)
         return objs
 
-    def write_ninja(self, keys_srcs, variant, engine_lib: Path, barre: bool):
+    def write_ninja(self, keys_srcs, variant, engine_libs, barre: bool):
         e = ninja_escape
         L = ["ninja_required_version = 1.8",
              f"cxx = {e(self.cxx)}",
@@ -328,15 +368,25 @@ class Build:
         cxx(self.util_obj, self.vendor / "yoga" / "tests" / "util" / "TestUtil.cpp", tflags)
         yoga = self.vendor / "yoga"
         yobjs = []
-        for src in self.yoga_srcs:
-            o = self.dir / "obj" / "yoga" / src.relative_to(yoga).with_suffix(".o")
-            cxx(o, src, f"{flags} -I{yoga}")
-            yobjs.append(o)
+        if self.rn is None:
+            for src in self.yoga_srcs:
+                o = self.dir / "obj" / "yoga" / src.relative_to(yoga).with_suffix(".o")
+                cxx(o, src, f"{flags} -I{yoga}")
+                yobjs.append(o)
+        else:
+            # RN's Yoga, with -Werror as its podspec builds it; the patched
+            # tree links barre-rn (BARRE_RN).
+            root = self.rn["root"]
+            rflags = f"{flags} -Werror -I{root}" + (" -DBARRE_RN=1" if self.rn["patched"] else "")
+            for src in self.rn["srcs"]:
+                o = self.tests_obj / "rnyoga" / src.relative_to(root).with_suffix(".o")
+                cxx(o, src, rflags)
+                yobjs.append(o)
         L.append(f"build {e(self.yoga_lib)}: ar {' '.join(e(o) for o in yobjs)}")
-        libs = "" if not barre else " ".join(native_libs())
+        libs = "" if not (barre or self.rn) else " ".join(native_libs())
         for key, src in keys_srcs:
             cxx(self.test_obj(key), src, tflags)
-            ins = [self.test_obj(key), *self.common_objs(barre), engine_lib]
+            ins = [self.test_obj(key), *self.common_objs(barre), *engine_libs]
             L.append(f"build {e(self.bin(variant, key))}: link {' '.join(e(i) for i in ins)}")
             L.append(f"  libs = {libs}")
         text = "\n".join(L) + "\n"
@@ -401,11 +451,46 @@ def build_error_reason(text: str) -> str:
     return lines[0].strip()[:300]
 
 
-def cargo_build(args) -> Path:
+def rn_tree(build_dir: Path, patched: bool):
+    """React Native's ReactCommon/yoga (RN_VERSION), stock or with RN_PATCH applied.
+
+    The pristine tree is $BARRE_RN_PRISTINE (a react-native package dir) or
+    is fetched into <build-dir>/rn/react-native-<version> by RN_FETCH. The
+    patched tree is a copy under <build-dir>/rn/patched-<patch hash>.
+    """
+    env = os.environ.get("BARRE_RN_PRISTINE")
+    pristine = Path(env).resolve() if env else build_dir / "rn" / f"react-native-{RN_VERSION}"
+    if not (pristine / "ReactCommon" / "yoga" / "yoga" / "Yoga.h").exists():
+        if env:
+            raise ConfError(f"BARRE_RN_PRISTINE={env} has no ReactCommon/yoga")
+        proc = subprocess.run([str(RN_FETCH), RN_VERSION, str(pristine)], capture_output=True, text=True,
+                              errors="replace")
+        if proc.returncode != 0:
+            raise ConfError(f"{RN_FETCH.name} {RN_VERSION} failed:\n{(proc.stdout + proc.stderr)[-3000:]}")
+    if not patched:
+        tag, top = f"stock-{RN_VERSION}", pristine
+    else:
+        patch = RN_PATCH.read_bytes()
+        tag = f"patched-{RN_VERSION}-{hashlib.sha256(patch).hexdigest()[:10]}"
+        top = build_dir / "rn" / tag
+        if not (top / ".applied").exists():
+            shutil.rmtree(top, ignore_errors=True)
+            shutil.copytree(pristine / "ReactCommon" / "yoga", top / "ReactCommon" / "yoga")
+            proc = subprocess.run(["patch", "-p1", "--forward", "--quiet", "-d", str(top), "-i", str(RN_PATCH)],
+                                  capture_output=True, text=True, errors="replace")
+            if proc.returncode != 0:
+                raise ConfError(f"{RN_PATCH.name} does not apply to react-native {RN_VERSION}:\n"
+                                + (proc.stdout + proc.stderr)[-3000:])
+            (top / ".applied").write_text(RN_PATCH.name + "\n")
+    root = top / "ReactCommon" / "yoga"
+    return {"tag": tag, "patched": patched, "root": root, "srcs": sorted((root / "yoga").rglob("*.cpp"))}
+
+
+def cargo_build(args, package="barre-ffi") -> Path:
     root = (args.engine_root or RUNNER_ROOT).resolve()
-    if not (root / "crates" / "barre-ffi").is_dir():
-        raise ConfError(f"no crates/barre-ffi in {root} (use --yoga to run the suite against real Yoga)")
-    cmd = ["cargo", "build", "-p", "barre-ffi", "--message-format=json-render-diagnostics"]
+    if not (root / "crates" / package).is_dir():
+        raise ConfError(f"no crates/{package} in {root} (use --yoga to run the suite against real Yoga)")
+    cmd = ["cargo", "build", "-p", package, "--message-format=json-render-diagnostics"]
     if args.release:
         cmd.append("--release")
     env = dict(os.environ)
@@ -413,7 +498,7 @@ def cargo_build(args) -> Path:
         env["CARGO_TARGET_DIR"] = str(args.target_dir.resolve())
     proc = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True, errors="replace")
     if proc.returncode != 0:
-        raise ConfError("cargo build -p barre-ffi failed:\n" + proc.stderr[-4000:])
+        raise ConfError(f"cargo build -p {package} failed:\n" + proc.stderr[-4000:])
     lib = None
     for line in proc.stdout.splitlines():
         try:
@@ -428,7 +513,7 @@ def cargo_build(args) -> Path:
             if f.endswith(".a") or f.endswith(".lib"):
                 lib = Path(f)
     if lib is None or not lib.exists():
-        raise ConfError("cargo build -p barre-ffi produced no staticlib (crate-type must include \"staticlib\")")
+        raise ConfError(f"cargo build -p {package} produced no staticlib (crate-type must include \"staticlib\")")
     return lib
 
 
@@ -541,10 +626,10 @@ def compile_canary_obj(build: Build, tmp: Path, rng, count):
     return proc, obj, tests
 
 
-def link_canary(build: Build, tmp: Path, obj: Path, barre: bool, engine_lib: Path):
+def link_canary(build: Build, tmp: Path, obj: Path, barre: bool, engine_libs):
     out = tmp / ("c" + obj.stem)
-    ins = [obj, build.main_obj, build.gtest_obj, engine_lib]
-    cmd = [build.cxx, *map(str, ins), *(native_libs() if barre else []), "-o", str(out)]
+    ins = [obj, build.main_obj, build.gtest_obj, *engine_libs]
+    cmd = [build.cxx, *map(str, ins), *(native_libs() if barre or build.rn else []), "-o", str(out)]
     proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
     return out, proc
 
@@ -595,6 +680,8 @@ def failure_reason(status: str, rc, out: str, timeout: float) -> str:
 def run_one(binary: Path, test: str, args, cwd: Path):
     nonce = "".join(random.SystemRandom().choice(string.ascii_lowercase + string.digits) for _ in range(24))
     env = {"CONF_NONCE": nonce, "RUST_BACKTRACE": "0", "PATH": "/usr/bin:/bin"}
+    if args.engine == "rn-barre":
+        env["BARRE_LAYOUT"] = "1"
     if args.mem_limit_mb > 0:
         env["CONF_MEM_LIMIT_MB"] = str(args.mem_limit_mb)
     cmd = [str(binary), f"--gtest_filter={test}", "--gtest_color=no", "--gtest_brief=1"]
@@ -708,7 +795,7 @@ def run(args, t0):
         raise ConfError(f"no test files match {' '.join(filters)}")
     to_build = [(k, p) for k, p in selected if not file_fully_skipped(k, skips)]
 
-    barre = not args.yoga
+    barre = args.engine == "barre"
     tmp = Path(tempfile.mkdtemp(prefix="conf-"))
     rng = random.SystemRandom()
     lock_fd = None
@@ -718,8 +805,16 @@ def run(args, t0):
         canary_proc, canary_obj, canary_tests = compile_canary_obj(build, tmp, rng, args.canaries)
 
         # engine (outside the build lock: cargo has its own)
-        if args.yoga:
-            variant, engine_lib = "yoga", build.yoga_lib
+        if args.engine == "yoga":
+            variant, engine_libs = "yoga", [build.yoga_lib]
+        elif args.engine == "rn-yoga":
+            variant, engine_libs = build.rn["tag"], [build.yoga_lib]
+        elif args.rn:
+            # rn-yoga-patched and rn-barre run the same binaries
+            log(args, "conf: cargo build -p barre-rn" + (" --release" if args.release else ""))
+            rn_lib = cargo_build(args, "barre-rn")
+            variant = build.rn["tag"] + "-" + shash(str(rn_lib), 6)
+            engine_libs = [build.yoga_lib, rn_lib]
         else:
             if args.lib:
                 engine_lib = args.lib.resolve()
@@ -731,6 +826,7 @@ def run(args, t0):
             default_lib = RUNNER_ROOT / "target" / ("release" if args.release else "debug") / engine_lib.name
             variant = (f"barre-{'release' if args.release else 'debug'}" if engine_lib == default_lib
                        else "lib-" + shash(str(engine_lib)))
+            engine_libs = [engine_lib]
 
         lock_fd = os.open(build_dir / ".lock", os.O_RDWR | os.O_CREAT, 0o644)
         try:
@@ -738,12 +834,12 @@ def run(args, t0):
         except BlockingIOError:
             log(args, "conf: waiting for the build lock (another ./conf is using this build dir)")
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        build.write_ninja(to_build, variant, engine_lib, barre)
+        build.write_ninja(to_build, variant, engine_libs, barre)
         if variant.startswith("lib-"):
             prune_lib_dirs(build, variant)
 
         # build
-        common = build.common_objs(barre) + ([build.yoga_lib] if args.yoga else [])
+        common = build.common_objs(barre) + ([build.yoga_lib] if args.engine != "barre" else [])
         bins = {k: build.bin(variant, k) for k, _ in to_build}
         log(args, f"conf: building {len(bins)} test binaries ({variant}) in {build_dir}")
         tb = time.monotonic()
@@ -770,7 +866,7 @@ def run(args, t0):
         canary_out, _ = canary_proc.communicate()
         if canary_proc.returncode != 0:
             raise ConfError("failed to compile the canary tests:\n" + canary_out[-3000:])
-        canary_bin, lp = link_canary(build, tmp, canary_obj, barre, engine_lib)
+        canary_bin, lp = link_canary(build, tmp, canary_obj, barre, engine_libs)
         canary_build_error = None if lp.returncode == 0 else build_error_reason(lp.stdout + lp.stderr)
 
         # sanity: barre binaries contain barre, not Yoga
@@ -781,7 +877,7 @@ def run(args, t0):
         except (OSError, ValueError):
             symcache = {}
         if barre:
-            invalid += check_barre_lib(engine_lib, symcache)
+            invalid += check_barre_lib(engine_libs[0], symcache)
             to_check = [b for k, b in bins.items() if k not in build_fail]
             if canary_build_error is None:
                 to_check.append(canary_bin)
@@ -867,6 +963,14 @@ def run(args, t0):
         run_s = time.monotonic() - tr
 
         passed_canaries = [t for t, r in canary_results.items() if r[0] == "pass"]
+        if args.rn and build.rn["patched"]:
+            # the canaries fail by design, so their output is kept: it shows
+            # whether the patched Yoga actually switched to barre
+            switched = [RN_BARRE_BANNER in r[2] for r in canary_results.values()]
+            want = args.engine == "rn-barre"
+            if switched and any(x != want for x in switched):
+                invalid.append(f"--engine {args.engine}: canaries ran with barre "
+                               + ("off" if want else "on") + " (layout switch not as requested)")
         if passed_canaries:
             invalid.append(f"{len(passed_canaries)} canary tests with wrong assertions passed: "
                            + ", ".join(passed_canaries))
