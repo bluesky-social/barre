@@ -9,7 +9,8 @@ import sys
 from dataclasses import dataclass
 
 import llm
-from common import PROMPTS, ROOT, WORK, git, run, tail
+from common import PROMPTS, ROOT, WORK, git, run
+from conformance import BASELINE, read_ids
 from policy import matches
 
 SLOTS = WORK / "slots"
@@ -17,8 +18,8 @@ ATTEMPTS = WORK / "attempts"
 
 WORKER_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "Bash"]
 WORKER_COMMANDS = [
-    "cargo build", "cargo check", "cargo clippy", "cargo fmt", "./t262", "./spec", "git diff", "git status",
-    "target/debug/kahvi", "./target/debug/kahvi", "grep", "head", "tail", "wc", "echo",
+    "cargo build", "cargo check", "cargo clippy", "cargo fmt", "./conf", "./spec", "git diff", "git status",
+    "grep", "head", "tail", "wc", "echo",
 ]
 WORKER_ALLOWED = ["Read", "Edit", "Write", "Glob", "Grep"] + [
     f"Bash({c}{suffix})" for c in WORKER_COMMANDS for suffix in ("", " *")
@@ -53,21 +54,19 @@ def prepare_slot(i, base):
     return path
 
 
-def spec_text(ids, limit=12000):
-    """The ticket's clauses plus short abstract operations they call."""
+def spec_text(names, limit=14000):
+    """The Yoga source for the ticket's `spec` names (./spec --refs: each
+    definition plus the short functions it calls)."""
     parts = []
-    for sid in ids:
-        out = run([sys.executable, str(ROOT / "harness" / "spec.py"), "--refs", sid], check=False).stdout
-        parts.append(tail(out, limit) if out.strip() else f"(no spec clause {sid})")
+    for name in names:
+        out = run([sys.executable, str(ROOT / "harness" / "spec.py"), "--refs", name], check=False).stdout
+        parts.append(out[:limit] + ("\n// ... truncated ..." if len(out) > limit else "")
+                     if out.strip() else f"(no Yoga definition named {name})")
     return "\n\n".join(parts) or "(none given)"
 
 
 def baseline_ids():
-    try:
-        lines = (ROOT / "conformance" / "expected-pass.txt").read_text().splitlines()
-    except FileNotFoundError:
-        return set()
-    return {l.strip() for l in lines if l.strip() and not l.startswith("#")}
+    return read_ids(ROOT / BASELINE)
 
 
 def target_pass_count(targets, ids=None):
@@ -83,13 +82,12 @@ def render_prompt(ticket, notes, salvaged):
     done = []
     if ticket.target:
         done.append(
-            f"Every test262 run under {', '.join(ticket.target)} passes "
-            f"(check with `./t262 {' '.join(ticket.target)}`). "
+            f"Every conformance test under {', '.join(ticket.target)} passes "
+            f"(check with `./conf {' '.join(ticket.target)}`). "
             f"{target_pass_count(ticket.target)} pass on the main branch right now."
         )
     for c in ticket.check:
-        done.append(f"This command exits 0 (`$KAHVI_BIN` is the engine built from your change, "
-                    f"like `target/debug/kahvi`): `{c}`")
+        done.append(f"This command exits 0 when run from the repository root: `{c}`")
     history = ""
     if notes or salvaged:
         history = "\n## Previous attempts\n\n"
@@ -139,9 +137,9 @@ def attempt(cfg, db, ticket, slot, tier, salvage_attempt=None):
     (adir / "prompt.md").write_text(prompt)
     env = dict(os.environ)
     env.update(
-        KAHVI_SCOPE=json.dumps(ticket.scope),
-        KAHVI_WORKTREE=str(path),
-        KAHVI_VENDOR=str(ROOT / "vendor"),
+        BARRE_SCOPE=json.dumps(ticket.scope),
+        BARRE_WORKTREE=str(path),
+        BARRE_VENDOR=str(ROOT / "vendor"),
     )
     hook = f"{sys.executable} {ROOT / 'harness' / 'orch' / 'hooks' / 'scope_guard.py'}"
     settings = {
@@ -184,13 +182,13 @@ def attempt(cfg, db, ticket, slot, tier, salvage_attempt=None):
     head = None
     if run(["git", "diff", "--cached", "--quiet"], cwd=path, check=False).returncode != 0:
         run(
-            ["git", "-c", "user.name=kahvi-worker", "-c", "user.email=worker@kahvi.invalid",
+            ["git", "-c", "user.name=barre-worker", "-c", "user.email=worker@barre.invalid",
              "commit", "-q", "--no-verify", "-m", f"{ticket.id} attempt {aid}"],
             cwd=path,
         )
         head = git("rev-parse", "HEAD", cwd=path)
         # Keep the commit reachable: later stages (and salvage) may need it after the slot moves on.
-        git("update-ref", f"refs/kahvi/{db.instance()}/attempts/{aid}", head, cwd=path)
+        git("update-ref", f"refs/barre/{db.instance()}/attempts/{aid}", head, cwd=path)
         (adir / "diff.patch").write_text(run(["git", "diff", base, head], cwd=path).stdout)
     db.set_attempt(aid, head=head, worker_cost=cost, turns=turns)
     return Attempt(aid, str(path), base, head, cost, turns, blocked, error, str(adir), kind)

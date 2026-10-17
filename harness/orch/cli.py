@@ -1,4 +1,4 @@
-"""kahvi orchestrator CLI. Run via ./orch from the repository root.
+"""barre orchestrator CLI. Run via ./orch from the repository root.
 
   ./orch run [--slots N] [--only T-0001,...] [--max-attempts N]   grind the ticket pool
   ./orch status                                                   tickets, costs, outcomes
@@ -8,7 +8,7 @@
   ./orch show ATTEMPT                                             one attempt's artifacts
   ./orch reset TICKET [--tier haiku]                              put a ticket back in the pool
   ./orch partials [--results F]                                   re-judge partial tickets
-  ./orch triage [--fresh] [--top N]                               cluster test262 failures
+  ./orch triage [--fresh] [--top N]                               cluster conformance failures
   ./orch calibrate [--model M] [--only CASE]                      run the verifier red-team set
 """
 
@@ -38,7 +38,7 @@ def cmd_run(args):
     if args.branch:
         cfg.branch = args.branch
     git("rev-parse", "--verify", cfg.branch)
-    log(f"building trusted runner; integration branch {cfg.branch}, {cfg.slots} slots")
+    log(f"checking the conformance runner; integration branch {cfg.branch}, {cfg.slots} slots")
     pipeline.build_tools(cfg)
     db = DB()
     # Accepted attempts that were waiting for the merge bot when the last run
@@ -191,7 +191,7 @@ def cmd_status(args):
         new = sum(a["new_passes"] for a in att if a["merged"])
         print(f"attempts: {len(att)}  merged: {sum(a['merged'] for a in att)}  "
               f"spend: ${cost:.2f} (workers ${wcost:.2f}, verifier ${cost - wcost:.2f})  "
-              f"new test262 passes: {new}" + (f"  (${cost / new:.3f} per pass)" if new else ""))
+              f"new conformance passes: {new}" + (f"  (${cost / new:.3f} per pass)" if new else ""))
         outcomes = Counter((a["tier"], a["outcome"]) for a in att)
         for (tier, outcome), n in sorted(outcomes.items(), key=lambda x: (x[0][0], str(x[0][1]))):
             print(f"  {tier:<7} {str(outcome):<12} {n}")
@@ -208,7 +208,7 @@ def cmd_status(args):
         print(f"plan usage at last run: {info.get('status')}" + (f"; {windows}" if windows else ""))
     summary = read_json(WORK / "last-full-summary.json")
     if summary:
-        print(f"test262 at last merge: {summary['pass']}/{summary['runs']} runs passing")
+        print(f"conformance at last merge: {summary['pass']}/{summary['runs']} tests passing")
 
 
 def cmd_usage(args):

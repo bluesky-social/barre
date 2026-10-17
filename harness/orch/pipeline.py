@@ -7,8 +7,6 @@ and a finished attempt that only lacks its verification resumes there.
 """
 
 import re
-import os
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -18,7 +16,7 @@ import llm
 import merge
 import verifier
 import worker
-from common import ROOT, WORK, log, read_json, run, write_json
+from common import ROOT, WORK, log, read_json, write_json
 
 MERGE_LOCK = threading.Lock()
 MAX_ERRORS = 3
@@ -184,17 +182,37 @@ def after_merge(cfg, db, ticket, att, m):
         return
     left = "\n".join(m["remaining"][:10])
     db.note(ticket.id, att.id, f"merged partial progress. Still failing:\n{left}")
-    # Reopen only if the ticket's own function still reports not
+    # Reopen only if the ticket's own functions still report not
     # implemented. Other leftovers are usually blocked on other
     # tickets or engine work: retrying would only escalate and burn
     # budget, so they wait for triage (`orch reset` reopens).
-    # The exact name: "Set" must not match "Set.prototype.add".
-    own = re.compile(rf"not implemented: {re.escape(ticket.title)}(?![\w.\[])")
-    if any(own.search(r) for r in m["remaining"]):
+    own = own_not_implemented(ticket)
+    if own and any(own.search(r) for r in m["remaining"]):
         db.set_ticket(ticket.id, status="open", strikes=0, salvage_attempt=None)
     else:
         db.set_ticket(ticket.id, status="partial", strikes=0, salvage_attempt=None,
                       reason=f"{len(m['remaining'])} target runs still failing, none in its own code path")
+
+
+def snake(name):
+    """computeFlexBasisForChild -> compute_flex_basis_for_child."""
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
+
+
+def own_not_implemented(ticket):
+    """Matches a failure whose not_implemented!("name") names one of the
+    ticket's own functions: its `spec` names (Yoga's camelCase, or barre's
+    snake_case, last path component) or its title. The exact name:
+    `baseline` must not match `calculate_baseline`."""
+    names = {ticket.title.strip()}
+    for s in ticket.spec:
+        last = s.rsplit("::", 1)[-1]
+        names |= {s, last, snake(last)}
+    names = sorted((n for n in names if n), key=len, reverse=True)
+    if not names:
+        return None
+    alt = "|".join(re.escape(n) for n in names)
+    return re.compile(rf"not implemented: ?(?:[\w:]*::)?(?:{alt})(?![\w.\[])")
 
 
 def refresh_partials(db, pool, results):
@@ -211,14 +229,16 @@ def refresh_partials(db, pool, results):
         t = pool.get(row["id"])
         if t is None or not t.target:
             continue
-        failing = [r for rid, r in by_id.items() if r["status"] != "pass" and any(rid.startswith(p) for p in t.target)]
+        failing = [r for rid, r in by_id.items()
+                   if r["status"] not in ("pass", "skip") and any(rid.startswith(p) for p in t.target)]
         if not failing:
             db.set_ticket(t.id, status="done", reason="")
             db.note(t.id, None, "every target run passes after later merges")
             changed["done"] += 1
             continue
-        own = re.compile(rf"not implemented: {re.escape(t.title)}(?![\w.\[])")
-        if any(own.search(r.get("reason", "")) for r in failing):
+        own = own_not_implemented(t)
+        if own and any(own.search(r.get("reason", "")) or own.search("not implemented: " + (r.get("not_implemented") or ""))
+                       for r in failing):
             db.set_ticket(t.id, status="open", strikes=0, salvage_attempt=None, reason="")
             db.note(t.id, None, "its own function reports not implemented again")
             changed["open"] += 1
@@ -237,11 +257,11 @@ def refresh_partials(db, pool, results):
 class MergeQueue:
     """Accepted attempts wait here for the merge bot, so slots go back to work
     at once. One thread merges whatever has queued up as one batch (one full
-    test262 run per batch instead of one per attempt)."""
+    conformance run per batch instead of one per attempt)."""
 
     def __init__(self, cfg, db):
         self.cfg, self.db = cfg, db
-        self.max_batch = int(cfg.t262.get("max_merge_batch", 8))
+        self.max_batch = int(cfg.conf.get("max_merge_batch", 8))
         self.items = []
         self.busy = False
         self.cv = threading.Condition()
@@ -291,8 +311,12 @@ class MergeQueue:
 
 
 def build_tools(cfg):
-    """Builds the trusted runner from the main checkout into work/bin/t262."""
-    env = dict(os.environ, CARGO_TARGET_DIR=str(WORK / "orch-target"))
-    run(["cargo", "build", "-q", "--release", "-p", "t262"], cwd=ROOT, env=env)
-    (WORK / "bin").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(WORK / "orch-target" / "release" / "t262", gates.T262)
+    """kahvi built a trusted runner binary here. barre's runner is a script
+    that always runs from the main checkout (conformance.py), so there is
+    nothing to build; this only checks it is there before workers start."""
+    from conformance import RUNNER
+    if not RUNNER.exists():
+        raise SystemExit(f"no conformance runner at {RUNNER} (docs/CONFORMANCE.md)")
+    for sub in ("vendor/yoga/yoga", "vendor/googletest"):
+        if not (ROOT / sub).exists():
+            raise SystemExit(f"{sub} missing: git submodule update --init --depth 1")

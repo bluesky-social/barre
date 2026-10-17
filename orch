@@ -1,3 +1,3 @@
 #!/bin/sh
-# kahvi orchestrator: ./orch run | status | show | reset | triage | calibrate
+# barre orchestrator: ./orch run | status | show | reset | triage | calibrate (docs/HARNESS.md)
 exec python3 "$(dirname "$0")/harness/orch/cli.py" "$@"

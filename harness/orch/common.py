@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-# Run state, worktrees and build caches. KAHVI_WORK lets a second
+# Run state, worktrees and build caches. BARRE_WORK lets a second
 # orchestrator (or a smoke test) run without touching the main one's state.
-WORK = Path(os.environ.get("KAHVI_WORK") or ROOT / "work").resolve()
+WORK = Path(os.environ.get("BARRE_WORK") or ROOT / "work").resolve()
 PROMPTS = ROOT / "harness" / "prompts"
 
 
@@ -26,7 +26,9 @@ class Config:
     worker: dict = field(default_factory=dict)
     verifier: dict = field(default_factory=dict)
     escalation: dict = field(default_factory=dict)
-    t262: dict = field(default_factory=dict)
+    limits: dict = field(default_factory=dict)  # usage-window caps (limits.py)
+    gate: dict = field(default_factory=dict)    # cargo commands the gates and the merge bot run
+    conf: dict = field(default_factory=dict)    # the conformance runner (./conf)
     stack: dict = field(default_factory=dict)  # set repo to land through stacked PRs (docs/STACKS.md)
 
     def model(self, tier):

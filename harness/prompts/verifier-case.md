@@ -3,9 +3,9 @@
 {body}
 
 Files in scope: {scope}
-Test262 target: {target}
+Conformance target: {target}
 
-# Spec
+# Yoga source (the spec)
 
 {spec}
 

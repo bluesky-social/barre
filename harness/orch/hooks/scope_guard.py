@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse hook: blocks file edits outside the ticket's scope.
 
-The orchestrator sets KAHVI_SCOPE (JSON list of globs, relative to the
-worktree) and KAHVI_WORKTREE. This is the live guard; the gate re-checks the
+The orchestrator sets BARRE_SCOPE (JSON list of globs, relative to the
+worktree) and BARRE_WORKTREE. This is the live guard; the gate re-checks the
 final diff, so anything that slips past here is still rejected.
 """
 
@@ -21,8 +21,8 @@ def main():
     path = tool_input.get("file_path") or tool_input.get("notebook_path")
     if not path:
         return 0
-    worktree = Path(os.environ["KAHVI_WORKTREE"]).resolve()
-    scope = json.loads(os.environ.get("KAHVI_SCOPE", "[]"))
+    worktree = Path(os.environ["BARRE_WORKTREE"]).resolve()
+    scope = json.loads(os.environ.get("BARRE_SCOPE", "[]"))
     target = (worktree / path).resolve() if not os.path.isabs(path) else Path(path).resolve()
     try:
         rel = target.relative_to(worktree).as_posix()

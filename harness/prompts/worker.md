@@ -10,7 +10,9 @@
 
 {read}
 
-## Spec
+## Yoga source (the spec)
+
+This is the C++ you are porting, from `vendor/yoga/yoga/`, followed by short functions it calls. Look up anything else with `./spec <name>`.
 
 {spec}
 

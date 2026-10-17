@@ -2,7 +2,14 @@
 # (same keys; tables are merged), e.g. `slots = 8` on a bigger box.
 
 branch = "main"   # integration branch the merge bot advances
-slots = 2         # concurrent workers (Rust builds are the bottleneck: ~1 slot per 2-4 cores)
+# Concurrent workers. Each slot's gate runs cargo build + clippy (a warm,
+# per-slot target dir) and then ./conf, which links Yoga's gtest suite
+# (C++) against barre-ffi and runs it one process per test. The Rust builds
+# are small but cargo and the C++ link use every core while they run; on a
+# 14-core / 48 GB machine 4 slots keeps the CPU busy without the gates of
+# one slot starving another's, and leaves the merge bot's full runs (and
+# you) some headroom. Memory is not the constraint (~2-3 GB per build).
+slots = 4
 push = false      # push the branch after every merge
 remote = "origin"
 
@@ -37,17 +44,29 @@ max_seven_day = 0.8
 max_default = 0.9         # any other window the plan reports
 backoff_minutes = 5       # wait when a limit is hit without a reset time (doubles, up to 2h)
 
+[gate]
+# cargo commands the gates (in a slot) and the merge bot run before ./conf.
+build = ["build", "-q", "--workspace"]
+clippy = ["clippy", "-q", "--workspace", "--all-targets", "--", "-D", "warnings"]
+
+[conf]
+# The conformance runner (./conf, docs/CONFORMANCE.md). It always runs from
+# the main checkout; only the engine is built from the tree under test.
+timeout = 10              # seconds per test
+jobs = 0                  # 0 = the runner's default (one per CPU)
+run_timeout = 3600        # seconds for a whole ./conf invocation
+max_merge_batch = 8       # accepted attempts the merge bot lands with one full run
+extra_args = []           # appended to every ./conf invocation
+
 [stack]
 # Land through stacked PRs whose CI runs the full suite (docs/STACKS.md).
-# Unset repo = the local merge bot. Set per machine in work/orch.local.toml.
-# repo = "mozzius/kahvi"
+# Unset repo = the local merge bot (barre's mode for now). Set per machine in
+# work/orch.local.toml.
+# repo = "mozzius/barre"
 trunk = "main"
-check = "test262"
-required_checks = ["test262"]
-artifact = "t262-results"
+check = "conformance"
+required_checks = ["conformance"]
+artifact = "conf-results"
 max_layer = 8
 poll_seconds = 60
-
-[t262]
-timeout = 10              # seconds per test
-jobs = 0                  # 0 = one per CPU
+# stress_paths = "^crates/barre/src/(cache|node)"   # layers touching these get stress_label

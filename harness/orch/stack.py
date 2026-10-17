@@ -1,5 +1,5 @@
 """The stacker: lands accepted work as a stack of pull requests whose CI runs
-the full test262 suite (docs/STACKS.md).
+the full conformance suite (docs/STACKS.md).
 
 Accepted attempts join a queue and are cherry-picked, in order, onto the
 local integration branch (cfg.branch), which workers start from. A layer is
@@ -24,8 +24,6 @@ from gates import read_results
 TREE = WORK / "stack-tree"
 LAYERS = WORK / "layers"
 BASELINE = "conformance/expected-pass.txt"
-# Changes here get the GC-stress shards in CI.
-STRESS_PATHS = re.compile(r"^crates/kahvi-core/src/(gc|heap|agent|host|env)\b|^crates/kahvi-core/src/object/")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS layers (
@@ -58,7 +56,7 @@ LIVE = ("pending", "green", "stuck")
 
 
 def _commit(message, cwd=TREE):
-    run(["git", "-c", "user.name=kahvi-stacker", "-c", "user.email=stacker@kahvi.invalid",
+    run(["git", "-c", "user.name=barre-stacker", "-c", "user.email=stacker@barre.invalid",
          "commit", "-q", "--no-verify", "-m", message], cwd=cwd)
 
 
@@ -70,9 +68,12 @@ class Stacker:
         self.trunk = s.get("trunk", "main")
         self.trunk_pr = s.get("trunk_pr")  # an open PR the stack sits on (m1-spine's PR into main)
         self.max_layer = int(s.get("max_layer", 8))
-        self.check = s.get("check", "test262")
+        self.check = s.get("check", "conformance")
         self.required = list(s.get("required_checks", [self.check]))
-        self.artifact = s.get("artifact", "t262-results")
+        self.artifact = s.get("artifact", "conf-results")
+        # Layers that change these paths get `stress_label` (extra CI shards).
+        self.stress_paths = re.compile(s["stress_paths"]) if s.get("stress_paths") else None
+        self.stress_label = s.get("stress_label", "stress")
         self.poll_seconds = int(s.get("poll_seconds", 60))
         self.pool_loader = pool_loader
         self.lock = threading.RLock()
@@ -145,7 +146,7 @@ class Stacker:
     def _apply(self, item):
         """Applies one queue item on TREE's HEAD; returns the new commit or None on a conflict."""
         if item["kind"] == "land":
-            r = run(["git", "-c", "user.name=kahvi-stacker", "-c", "user.email=stacker@kahvi.invalid",
+            r = run(["git", "-c", "user.name=barre-stacker", "-c", "user.email=stacker@barre.invalid",
                      "merge", "--no-ff", "-q", "-m", f"Merge {item['ticket']} (architect)", item["source"]],
                     cwd=TREE, check=False)
             if r.returncode != 0:
@@ -264,7 +265,7 @@ class Stacker:
         if baseline is not None and (TREE / BASELINE).read_text() != baseline:
             (TREE / BASELINE).write_text(baseline)
             git("add", BASELINE, cwd=TREE)
-            _commit(f"test262 baseline: what the layer below passes in CI\n\n{baseline.count(chr(10))} expected passing runs.")
+            _commit(f"conformance baseline: what the layer below passes in CI\n\n{baseline.count(chr(10))} expected passing runs.")
         head = git("rev-parse", "HEAD", cwd=TREE)
         base_branch = floor["branch"] if floor else self.trunk_branch()
         now = time.time()
@@ -286,8 +287,8 @@ class Stacker:
         self.db.q("UPDATE layers SET pr = ? WHERE id = ?", pr, lid)
         changed = run(["git", "diff", "--name-only", self.floor_commit() if not floor else floor["head"], head],
                       check=False).stdout.split()
-        if any(STRESS_PATHS.match(p) for p in changed):
-            self.gh.add_labels(pr, ["gc-stress"])
+        if self.stress_paths and any(self.stress_paths.match(p) for p in changed):
+            self.gh.add_labels(pr, [self.stress_label])
         self._link(floor, pr)
         self.db.q(f"DELETE FROM stack_queue WHERE pos IN ({','.join('?' * len(group))})", *[g["pos"] for g in group])
         log(f"stack: pushed {branch} as #{pr} with {', '.join(g['ticket'] for g in group)}")
@@ -313,8 +314,8 @@ class Stacker:
                 lines.append(f"- {g['ticket']}: {t.title if t else ''} (attempt {g['attempt']}, verdict {g['verdict']})")
         below = f"#{floor['pr']}" if floor and floor["pr"] else f"`{self.trunk_branch()}`"
         return ("Swarm work, stacked on " + below + ". Accepted by the gates and the blind verifier; "
-                "CI runs the full test262 suite against the layer below's results (0 regressions).\n\n"
-                + "\n".join(lines) + "\n\nOpened by the kahvi stacker (docs/STACKS.md).")
+                "CI runs the full conformance suite against the layer below's results (0 regressions).\n\n"
+                + "\n".join(lines) + "\n\nOpened by the barre stacker (docs/STACKS.md).")
 
     def _link(self, floor, pr):
         """Adds the PR to the GitHub stack. Linking is GitHub's view of the
@@ -443,7 +444,7 @@ class Stacker:
                       runs[self.check]["id"], time.time(), layer["id"])
             log(f"stack: {layer['branch']} CI produced no valid result; re-running once")
             return
-        note = f"CI failed twice without a valid test262 result ({', '.join(failed)}); needs the architect"
+        note = f"CI failed twice without a valid conformance result ({', '.join(failed)}); needs the architect"
         self.db.q("UPDATE layers SET status = 'stuck', note = ?, updated = ? WHERE id = ?", note, time.time(), layer["id"])
         log(f"stack: needs-architect: {layer['branch']} (#{layer['pr']}): {note}. "
             "Fix CI, then `./orch stack retry`.")
@@ -568,7 +569,7 @@ class Stacker:
         self.db.q("UPDATE layers SET head = ? WHERE id = ?", onto, below["id"])
         for layer in live:
             self._prepare(layer["head"])
-            r = run(["git", "-c", "user.name=kahvi-stacker", "-c", "user.email=stacker@kahvi.invalid",
+            r = run(["git", "-c", "user.name=barre-stacker", "-c", "user.email=stacker@barre.invalid",
                      "rebase", "-q", "--rebase-merges", "--onto", onto, upstream], cwd=TREE, check=False)
             if r.returncode != 0:
                 git("rebase", "--abort", cwd=TREE, check=False)

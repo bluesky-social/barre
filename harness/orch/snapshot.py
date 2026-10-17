@@ -87,7 +87,7 @@ def snapshot(cfg, reason="attempt finished"):
         if not git("status", "--porcelain", cwd=REPO):
             return
         stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-        run(["git", "-c", "user.name=kahvi-orchestrator", "-c", "user.email=orchestrator@kahvi.invalid",
+        run(["git", "-c", "user.name=barre-orchestrator", "-c", "user.email=orchestrator@barre.invalid",
              "commit", "-q", "--no-verify", "-m", f"runs: {reason} ({stamp} UTC)"], cwd=REPO)
         if cfg.push:
             for delay in (0, 2, 4, 8):

@@ -1,12 +1,14 @@
 """The merge bot: replays an accepted attempt onto the tip of the integration
-branch, runs the full suite, and advances the branch only if nothing that
-passed before fails now. The baseline (conformance/expected-pass.txt) is
-rewritten in the same commit, so the pass count can only ratchet up."""
+branch, runs the full conformance suite, and advances the branch only if
+nothing that passed before fails now. The baseline
+(conformance/expected-pass.txt) is rewritten in the same commit, so the pass
+count can only ratchet up."""
 
 from pathlib import Path
 
-from common import ROOT, WORK, git, log, run, write_json
-from gates import cargo, read_results, run_t262
+from common import WORK, git, log, run, write_json
+from conformance import BASELINE, read_ids, run_conf, write_baseline
+from gates import build, read_results
 
 MERGE_DIR = WORK / "merge"
 
@@ -38,7 +40,7 @@ def advance_branch(cfg, old, new):
 
 
 def _commit(message, cwd=MERGE_DIR):
-    run(["git", "-c", "user.name=kahvi-merge-bot", "-c", "user.email=merge-bot@kahvi.invalid",
+    run(["git", "-c", "user.name=barre-merge-bot", "-c", "user.email=merge-bot@barre.invalid",
          "commit", "-q", "--no-verify", "--allow-empty", "-m", message], cwd=cwd)
 
 
@@ -70,7 +72,7 @@ def merge(cfg, ticket, attempt_id, head, verdict, adir):
 
 
 def merge_batch(cfg, items):
-    """Merges several accepted attempts with one full test262 run.
+    """Merges several accepted attempts with one full conformance run.
 
     Each item is a dict with ticket, attempt_id, head, verdict and adir. The
     attempts are cherry-picked in order onto the branch tip; one that
@@ -97,36 +99,37 @@ def merge_batch(cfg, items):
 
     names = ", ".join(it["ticket"].id for it in picked)
     target_dir = WORK / "merge-target"
-    build = cargo(["build", "-q", "-p", "kahvi-cli"], MERGE_DIR, target_dir)
-    if build.returncode != 0:
-        return split({"merged": False, "reason": "does not build on top of the current branch:\n" + build.stderr[-2000:]})
-    engine = target_dir / "debug" / "kahvi"
-    baseline = MERGE_DIR / "conformance" / "expected-pass.txt"
-    jobs = cfg.t262.get("jobs") or 0
-    extra = ["--timeout", str(cfg.t262.get("timeout", 10))] + (["--jobs", str(jobs)] if jobs else [])
+    b = build(cfg, MERGE_DIR, target_dir)
+    if b.returncode != 0:
+        return split({"merged": False, "reason": "does not build on top of the current branch:\n" + b.stderr[-2000:]})
+    baseline = MERGE_DIR / BASELINE
+    old = read_ids(baseline)
 
     adir = Path(picked[0]["adir"])
-    # The full run rewrites the baseline, dropping whatever regressed, so the
-    # flake re-run must compare against the baseline from before it.
-    before = adir / "baseline-before.txt"
-    before.write_text(baseline.read_text())
-    log(f"full test262 run for merge: {names}")
-    _, s = run_t262([], engine, adir, "full", baseline=baseline, write_baseline=baseline, extra=extra)
+    log(f"full conformance run for merge: {names}")
+    _, s = run_conf([], MERGE_DIR, adir, "full", target_dir=target_dir, baseline=baseline, cfg=cfg.conf)
     if s is None or not s["canaries_ok"]:
-        git("checkout", "--", "conformance", cwd=MERGE_DIR, check=False)
         for it in picked:
-            results[it["attempt_id"]] = {"merged": False, "reason": "full run invalid (canaries or runner failure)"}
+            results[it["attempt_id"]] = {"merged": False,
+                                         "reason": "full run invalid (canaries or runner failure)"}
         return results
     regressions = s["regressions"]
     if regressions:
-        # One re-run of just the regressed files to rule out flakes.
-        files = sorted({r.rsplit(":", 1)[0] for r in regressions})
-        _, s2 = run_t262(files, engine, adir, "recheck", baseline=before, write_baseline=baseline, extra=extra)
-        still = regressions if s2 is None else s2["regressions"]
+        # One re-run of just the regressed tests to rule out flakes.
+        _, s2 = run_conf(regressions, MERGE_DIR, adir, "recheck", target_dir=target_dir, baseline=baseline,
+                         cfg=cfg.conf)
+        still = regressions if s2 is None or not s2["canaries_ok"] else \
+            [r for r in s2["regressions"] if r in set(regressions)]
         if still:
-            git("checkout", "--", "conformance", cwd=MERGE_DIR, check=False)
             return split({"merged": False, "reason": f"{len(still)} regressions in the full suite",
                           "regressions": still[:50]})
+
+    # The new baseline: everything passing now. A flaky regression that passed
+    # on the re-run stays in; a test that vanished (skipped now) drops out.
+    full = read_results(adir / "full.jsonl")
+    passing = {r["id"] for r in full if r["status"] == "pass"} | (old & set(regressions))
+    write_baseline(baseline, passing)
+    s["pass"] = len(passing)
 
     # Passed. The per-attempt commits are kept; the new baseline is committed
     # on top, with the new passes attributed to the tickets whose target they
@@ -134,20 +137,19 @@ def merge_batch(cfg, items):
     new = s["new_passes"]
     counts = {it["attempt_id"]: (len(new) if len(picked) == 1 else
                                  sum(1 for r in new if _in_target(it["ticket"], r))) for it in picked}
-    git("add", "-A", cwd=MERGE_DIR)
+    git("add", "--", BASELINE, cwd=MERGE_DIR)
     lines = [f"- {it['ticket'].id} (attempt {it['attempt_id']}, verdict {it['verdict']}): "
              f"+{counts[it['attempt_id']]} in its target" for it in picked]
-    _commit(f"test262 baseline after {names} (+{len(new)})\n\n" + "\n".join(lines) +
-            f"\n\ntest262: {s['pass']}/{s['runs']} runs passing.")
+    _commit(f"conformance baseline after {names} (+{len(new)})\n\n" + "\n".join(lines) +
+            f"\n\nconformance: {s['pass']}/{s['runs']} tests passing.")
     head = git("rev-parse", "HEAD", cwd=MERGE_DIR)
     advance_branch(cfg, tip, head)
     (WORK / "last-full.jsonl").write_text((adir / "full.jsonl").read_text())
     write_json(WORK / "last-full-summary.json", s)
 
-    full = read_results(adir / "full.jsonl")
     for it in picked:
         remaining = [f"{r['id']}  {r['reason'][:140]}" for r in full
-                     if _in_target(it["ticket"], r["id"]) and r["status"] != "pass"]
+                     if _in_target(it["ticket"], r["id"]) and r["status"] not in ("pass", "skip")]
         results[it["attempt_id"]] = {
             "merged": True,
             "commit": head,

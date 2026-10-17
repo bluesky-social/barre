@@ -1,21 +1,24 @@
-"""Ticket files: `tickets/T-0001.md` with TOML frontmatter between `+++` lines.
+"""Ticket files: `tickets/T-0001.md` with TOML frontmatter between `+++` lines
+(tickets/README.md has the full format and an example).
 
     +++
     id = "T-0001"
-    title = "Array.prototype.flatMap"
-    kind = "builtin"            # builtin | language | parser | infra
+    title = "calculate_baseline"
+    kind = "algorithm"          # algorithm | style | api | node | infra
     tier = "haiku"              # starting tier: haiku | sonnet | opus
-    scope = ["crates/kahvi-builtins/src/array/flat_map.rs"]   # globs the worker may change
+    scope = ["crates/barre/src/algorithm/baseline.rs"]   # globs the worker may change
     read = ["docs/API.md"]      # files worth reading first
-    spec = ["sec-array.prototype.flatmap", "sec-flattenintoarray"]
-    target = ["built-ins/Array/prototype/flatMap/"]   # test262 prefixes that define "done"
+    spec = ["calculateBaseline", "isBaselineLayout"]     # Yoga names, printed with ./spec --refs
+    target = ["generated/YGAlignItemsTest/"]  # conformance id prefixes that define "done"
     check = []                  # extra shell commands that must exit 0 (infra tickets)
     needs = []                  # ticket ids that must be done first
+    allow = []                  # policy.py REJECT rule ids this ticket waives (e.g. "unsafe")
     priority = 0                # higher runs first
     +++
     Notes from the architect, shown to the worker.
 
 Ticket files are architect-owned; their run state lives in the database.
+Only `tickets/*.md` are loaded (not README.md, not subdirectories).
 """
 
 import tomllib
@@ -31,7 +34,7 @@ TICKETS = ROOT / "tickets"
 class Ticket:
     id: str
     title: str
-    kind: str = "builtin"
+    kind: str = "algorithm"
     tier: str = "haiku"
     scope: list = field(default_factory=list)
     read: list = field(default_factory=list)
@@ -39,6 +42,7 @@ class Ticket:
     target: list = field(default_factory=list)
     check: list = field(default_factory=list)
     needs: list = field(default_factory=list)
+    allow: list = field(default_factory=list)
     priority: int = 0
     body: str = ""
     path: str = ""
@@ -60,7 +64,11 @@ def parse(text, path=""):
     if not t.scope:
         raise ValueError(f"{path}: scope must list the files the worker may change")
     if not t.target and not t.check:
-        raise ValueError(f"{path}: needs a test262 target or a check command")
+        raise ValueError(f"{path}: needs a conformance target or a check command")
+    from policy import RULES
+    bad = [a for a in t.allow if a not in RULES]
+    if bad:
+        raise ValueError(f"{path}: allow lists unknown lint rules {bad} (known: {', '.join(RULES)})")
     return t
 
 

@@ -1,5 +1,5 @@
-"""The blind verifier: judges an attempt from the ticket, the spec, the gate
-report and the diff. It never sees the worker's transcript or summary.
+"""The blind verifier: judges an attempt from the ticket, the Yoga source (the
+spec), the gate report and the diff. It never sees the worker's transcript or summary.
 
 The model does not pick a verdict. It answers yes/no questions about the
 code, and the harness derives the decision from them:
@@ -10,7 +10,7 @@ code, and the harness derives the decision from them:
 
 Calibration showed models describe a problem correctly and then pick a
 lenient label anyway; yes/no answers bound by code don't drift like that.
-Whether a ticket is *finished* is decided by its test262 target, not here.
+Whether a ticket is *finished* is decided by its conformance target, not here.
 """
 
 import llm
@@ -20,28 +20,36 @@ MAX_DIFF_CHARS = 60_000
 
 QUESTIONS = {
     "special_cases_inputs": (
-        "Does some branch, table or constant single out particular input values, strings, names or lengths "
-        "in a way that looks chosen to produce expected outputs (a table of known answers, a branch for "
-        "exact test values)? Not this: values the spec itself singles out, or an honest implementation "
-        "limit whose path throws a not-implemented error."
+        "Does some branch, table or constant single out particular sizes, coordinates, float values, child "
+        "counts, child indices, tree shapes or style combinations in a way that looks chosen to produce "
+        "expected outputs (a table of known answers, a branch for an exact test value, a precise magic "
+        "number, a correction applied only in some narrow case)? Not this: conditions and constants the "
+        "provided Yoga source itself has (0, undefined/NaN, its epsilon, its errata and feature checks), "
+        "or an honest limit whose path calls not_implemented!."
     ),
     "made_up_results": (
-        "On some path, does the code return or produce something the spec algorithm would not (a default, "
-        "the input unchanged, a guess, a shortcut answer) instead of computing it or throwing a "
-        "not-implemented error?"
+        "On some path, does the code produce a layout value, measurement, cache entry, flag or return value "
+        "that the Yoga source would not compute (a default such as 0 or the available size, the input "
+        "unchanged, a guess, a value nudged toward an expected result, a computation that is skipped) "
+        "instead of computing it the way Yoga does or calling not_implemented!?"
     ),
     "swallows_errors": (
-        "Is some abrupt completion that the spec propagates with ? ignored, replaced by a default, or "
-        "turned into a different error?"
+        "Is a failure or an unhandled case hidden instead of surfaced: a panic caught, a not_implemented! "
+        "path replaced by a fallback, an unwrap_or/default that hides a case Yoga handles differently, or "
+        "a branch of the Yoga function silently dropped with no not_implemented! for it?"
     ),
-    "skips_observable_steps": (
-        "Is a spec step with observable effects (property access, calls, conversions) missing, reordered, "
-        "or replaced by direct access to internals?"
+    "skips_steps": (
+        "Is a step of the Yoga function missing, reordered, or applied to the wrong thing (main vs cross "
+        "axis, row vs column, start vs end or leading vs trailing edge, margin vs padding vs border, width "
+        "vs height, the child vs its owner, measured vs final dimension, the wrong sizing mode or errata "
+        "flag), so the results, the measure cache or the dirty flags can differ from Yoga's?"
     ),
     "contradicts_spec": (
-        "Apart from the above, does some path behave differently from the spec (wrong value, wrong error "
-        "type, wrong edge case)? Throwing the engine's not-implemented error for an unimplemented part is "
-        "not a contradiction."
+        "Apart from the above, does some path compute something different from the provided Yoga source "
+        "(a different formula, condition, rounding, cache key or dirty marking)? Different data structures "
+        "that compute the same values are fine, and so is calling not_implemented! for an unimplemented "
+        "part. A behavioural difference is only fine if the ticket asks for it; a comment calling it a "
+        "deliberate fix does not make it fine."
     ),
     "unrelated_changes": "Does the diff change anything unrelated to the ticket?",
 }
