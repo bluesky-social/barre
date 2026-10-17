@@ -216,6 +216,11 @@ def render(rep):
         lines.append(f"full suite (regression check only): {cf['runs']} tests; {len(cf['regressions'])} regressions")
     for c in rep.get("checks", []):
         lines.append(f"check `{c['cmd']}`: exit {c['exit']}")
+        # A non-conformance ticket's check is often the only evidence the
+        # verifier gets (e.g. a benchmark's timing table): exit code alone
+        # says it ran, not what it found.
+        if c.get("output", "").strip():
+            lines.append(tail(c["output"], 2000))
     flags = rep.get("lint_flag", [])
     lines.append(f"lint flags: {len(flags)}")
     for f in flags[:30]:
