@@ -79,13 +79,20 @@ Output:
   - for `skip`, the reason from `skip.txt`.
 - `--summary-json F`: `{variant, valid, invalid_reasons, canaries,
   canaries_ok, total, in_scope, pass, fail, crash, timeout, build_fail, skip,
-  pass_rate, not_implemented: {name: count}, regressions, new_passes,
+  pass_rate, not_implemented: {name: count}, canary_results, regressions,
+  vanished, new_passes,
   elapsed_s, run_s}`.
-- `--baseline F`: compare with an expected-pass list. A regression is an ID in
-  F that matches the filters and did not pass (including `skip`, and IDs that
-  no longer exist, reported as `missing`). New passes are passes not in F.
+- `--baseline F`: compare with an expected-pass list (one ID per line, `#`
+  comments). A regression is an ID in F that matches the filters, ran, and did
+  not pass (fail/crash/timeout/build-fail); any regression makes the exit code
+  1. IDs in F that are now skipped or no longer exist are reported as
+  `vanished` (not regressions: skip.txt is a protected path, and upstream
+  renames are not a change's fault); they drop out on the next rewrite. New
+  passes are passes not in F. (harness/orch/conformance.py computes the same
+  from `--json` itself.)
 - `--update-expected`: rewrite the baseline (`--baseline F` if given, else
-  `conformance/expected-pass.txt`) with this run's passes. With filters, only
+  `conformance/expected-pass.txt`, keeping its leading comment block) with
+  this run's passes. With filters, only
   IDs matching them are replaced; others are kept. Refused with `--yoga`,
   `--no-skip`, and on an invalid run. It rewrites even when there are
   regressions (the regressed IDs drop out), so a caller that rejects the run

@@ -848,7 +848,7 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
             name = reason[len("not implemented: "):]
             not_impl[name] = not_impl.get(name, 0) + 1
 
-    regressions, new_passes = [], []
+    regressions, vanished, new_passes = [], [], []
     baseline_path = args.baseline or (CONF_DIR / "expected-pass.txt" if args.update_expected else None)
     if args.baseline:
         base = set(read_id_list(args.baseline))
@@ -856,7 +856,9 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
             if not id_matches(tid, args.filters):
                 continue
             st = results.get(tid, ("missing",))[0]
-            if st != "pass":
+            if st in ("missing", "skip"):
+                vanished.append((tid, st))
+            elif st != "pass":
                 regressions.append((tid, st))
         new_passes = sorted(t for t, r in results.items() if r[0] == "pass" and t not in base)
 
@@ -868,7 +870,8 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
         "total": total, "in_scope": in_scope, **{k.replace("-", "_"): v for k, v in counts.items()},
         "pass_rate": round(rate, 2), "not_implemented": dict(sorted(not_impl.items(), key=lambda x: -x[1])),
         "canary_results": {t: r[0] for t, r in sorted(canary_results.items())},
-        "regressions": [t for t, _ in regressions], "new_passes": new_passes,
+        "regressions": [t for t, _ in regressions], "vanished": [t for t, _ in vanished],
+        "new_passes": new_passes,
         "elapsed_s": round(elapsed, 2), "run_s": round(run_s, 2),
     }
 
@@ -911,9 +914,12 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
         top = ", ".join(f"{n} ({c})" for n, c in list(summary["not_implemented"].items())[:8])
         print(f"not implemented: {top}", file=out)
     if args.baseline:
-        print(f"baseline {args.baseline}: {len(regressions)} regressions, {len(new_passes)} new passes", file=out)
+        print(f"baseline {args.baseline}: {len(regressions)} regressions, {len(new_passes)} new passes"
+              + (f", {len(vanished)} vanished (skipped or no longer exist)" if vanished else ""), file=out)
         for tid, st in regressions[:30]:
-            print(f"  REGRESSION {tid}: {st}", file=out)
+            print(f"  REGRESSION {tid}: {results[tid][1] or st}"[:200], file=out)
+        for tid, st in vanished[:10]:
+            print(f"  VANISHED {tid}: {st}", file=out)
         if len(regressions) > 30:
             print(f"  ... and {len(regressions) - 30} more", file=out)
     if not valid:
@@ -926,7 +932,13 @@ def report(args, results, file_of, invalid, canary_results, variant, elapsed, ru
         old = read_id_list(baseline_path)
         keep = {t for t in old if not id_matches(t, args.filters)}
         new = sorted(keep | {t for t, r in results.items() if r[0] == "pass"})
-        baseline_path.write_text("".join(t + "\n" for t in new))
+        header = []
+        if baseline_path.exists():
+            for line in baseline_path.read_text().splitlines():
+                if not (line.startswith("#") or not line.strip()):
+                    break
+                header.append(line + "\n")
+        baseline_path.write_text("".join(header) + "".join(t + "\n" for t in new))
         print(f"wrote {baseline_path} ({len(new)} tests)", file=out)
     return EXIT_REGRESSION if regressions else EXIT_OK
 
