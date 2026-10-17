@@ -3316,7 +3316,10 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                         s.replays_direct_retainable += 1;
                     }
                     s.replays += 1;
-                    s.nodes.entry(crate::stats::node_id(layout)).or_default().replays += 1;
+                    s.nodes
+                        .entry(crate::stats::node_id(layout))
+                        .or_default()
+                        .replays += 1;
                 });
                 calculate_layout_impl(
                     node,
@@ -3363,17 +3366,52 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                 layout.measured_dimension(Dimension::Width),
                 layout.measured_dimension(Dimension::Height),
             );
-            let entries = layout.cached_measurements[..layout.next_cached_measurements_index.get() as usize]
+            let entries = layout.cached_measurements
+                [..layout.next_cached_measurements_index.get() as usize]
                 .iter()
                 .map(|e| e.get())
                 .chain(std::iter::once(layout.cached_layout.get()));
             let mut seen = false;
             let mut same_gen = false;
-            for e in entries {
-                if e.computed_width.to_bits() == w.to_bits() && e.computed_height.to_bits() == h.to_bits() {
-                    seen = true;
-                    same_gen |= e.generation == generation_count;
+            let mut class: Option<String> = None;
+            let rel = |a: f32, b: f32| {
+                if a.is_nan() && b.is_nan() {
+                    "nan"
+                } else if a.is_nan() || b.is_nan() {
+                    "nan?"
+                } else if a == b {
+                    "="
+                } else if a < b {
+                    "<"
+                } else {
+                    ">"
                 }
+            };
+            for e in entries {
+                if e.computed_width.to_bits() == w.to_bits()
+                    && e.computed_height.to_bits() == h.to_bits()
+                {
+                    seen = true;
+                    if e.generation == generation_count && !same_gen {
+                        same_gen = true;
+                        class = Some(format!(
+                            "{} leaf={} entry({:?},{:?}) -> call({:?},{:?}) avail w{} h{} | w fits={} h fits={}",
+                            if perform_layout { "layout " } else { "measure" },
+                            node.has_measure_func(),
+                            e.width_sizing_mode,
+                            e.height_sizing_mode,
+                            width_sizing_mode,
+                            height_sizing_mode,
+                            rel(available_width, e.available_width),
+                            rel(available_height, e.available_height),
+                            w < available_width,
+                            h < available_height,
+                        ));
+                    }
+                }
+            }
+            if let Some(c) = class {
+                *s.redundant.entry(c).or_default() += 1;
             }
             if seen && !perform_layout {
                 s.measure_run_result_seen += 1;
@@ -3458,7 +3496,9 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         } else {
             Outcome::Miss
         };
-        *s.calls.entry((perform_layout, reason as u8, outcome)).or_default() += 1;
+        *s.calls
+            .entry((perform_layout, reason as u8, outcome))
+            .or_default() += 1;
         let ns = s.nodes.entry(crate::stats::node_id(layout)).or_default();
         ns.calls += 1;
         ns.has_measure_func = node.has_measure_func();

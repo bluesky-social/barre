@@ -64,6 +64,7 @@ mod imp {
         /// Runs with perform_layout=false whose (w, h) result equals an
         /// existing measurement entry for the same node (any generation).
         pub measure_run_result_seen: u32,
+        pub redundant: HashMap<String, u32>,
     }
 
     thread_local! {
@@ -102,6 +103,7 @@ mod imp {
             s.measure_callbacks = 0;
             s.run_equal_to_existing = 0;
             s.measure_run_result_seen = 0;
+            s.redundant.clear();
         });
     }
 
@@ -153,6 +155,11 @@ mod imp {
                     format!("{outcome:?}"),
                     count
                 );
+            }
+            let mut red: Vec<_> = s.redundant.iter().collect();
+            red.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+            for (k, c) in red.iter().take(14) {
+                out += &format!("  same-result run {c:>5}  {k}\n");
             }
             out += &format!("  calls/node histogram: {hist:?}\n");
             out += &format!("  runs/node histogram: {run_hist:?}\n");
