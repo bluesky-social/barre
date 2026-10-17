@@ -1,22 +1,26 @@
 # Landing through stacked PRs
 
-The swarm no longer advances an integration branch after a local full
-test262 run. Accepted work goes into a stack of pull requests on GitHub, the
-full suite (and GC stress) runs as sharded PR CI, and Samuel merges the stack
-from the bottom whenever he likes. `m1-spine`, `land.sh` and the local merge
-bot's full run retire.
+> **barre runs locally for now** (no `[stack] repo`; the local merge bot
+> advances `main` after a full `./conf` run, docs/HARNESS.md). This mode is
+> kahvi's, kept working with names changed, for when barre has CI. Turning it
+> on needs the CI workflow below, which does not exist yet.
+
+In this mode the swarm does not advance an integration branch after a local
+full conformance run. Accepted work goes into a stack of pull requests on
+GitHub, the full suite runs as PR CI, and Samuel merges the stack from the
+bottom whenever he likes.
 
 ## Flow
 
 ```
-worker ─▶ gates (scope · lint · clippy · target test262 before/after) ─▶ blind verifier
+worker ─▶ gates (scope · lint · clippy · target ./conf before/after) ─▶ blind verifier
                                                         │ accept
                                                         ▼
                          stacker: cherry-pick onto the stack top
                                                         │
                     layer = branch stack/NNNN + PR (base: the layer below)
                                                         │
-                       sharded PR CI: full test262 (+ GC stress) vs the layer's baseline
+                       PR CI: full ./conf (+ stress shards) vs the layer's baseline
               green ─▶ tickets done/partial; layer waits for Samuel's merge
               red   ─▶ split the layer / drop the bad commit, restack, ticket back to the pool
 ```
@@ -67,9 +71,11 @@ never merges anything.
 ## Architect work
 
 `./orch land BRANCH` puts an architect branch on top of the stack as its own
-layer (no swarm stop). A layer that touches the GC, the heap or object
-internals gets the `gc-stress` label, which makes CI add the stress shards.
-The 0-regression and GC-stress rules are unchanged; CI enforces them.
+layer (no swarm stop). A layer that touches a path matching `[stack]
+stress_paths` gets the `stress_label` label, which a workflow can use to add
+extra shards (kahvi used this for GC stress; barre could use it for
+differential fuzzing against Yoga). The 0-regression rule is unchanged; CI
+enforces it.
 
 ## What CI provides
 
@@ -79,12 +85,13 @@ Owned by the CI workflow (`.github/workflows/`):
    layers, not `main`), and on pushes to `main`.
 2. Measures regressions against the PR head's own
    `conformance/expected-pass.txt`.
-3. One aggregate check run named `test262`, plus an artifact `t262-results`
-   holding the merged results of all shards: per-run JSONL (`id`, `status`,
-   `reason`, `not_implemented`) and the passing ids in `expected-pass.txt`
+3. One aggregate check run named `conformance`, plus an artifact
+   `conf-results` holding the merged results of all shards: per-test JSONL
+   (`id`, `status`, `reason`, `not_implemented`, as `harness/orch/conformance.py`
+   normalises `./conf --json`), the passing ids in `expected-pass.txt`
    format, and a summary with the regressions and whether the run was valid
    (canaries, no runner loss).
-4. GC-stress shards when the PR has the `gc-stress` label.
+4. Extra shards when the PR has the `stress_label` label.
 
 ## Local work
 
@@ -99,12 +106,12 @@ and is snapshotted to `orch-runs` like everything else.
 ```toml
 branch = "stack"                 # local only: the stack top, which workers start from
 [stack]
-repo = "mozzius/kahvi"
+repo = "mozzius/barre"
 trunk = "main"                   # or the branch of an open PR the stack sits on
 # trunk_pr = 3                   # that PR, put at the bottom of the GitHub stack
-check = "test262"                # the aggregate check whose artifact decides
-required_checks = ["test262", "fmt, clippy, test"]
-artifact = "t262-results"        # results.jsonl, summary.json, expected-pass.txt
+check = "conformance"            # the aggregate check whose artifact decides
+required_checks = ["conformance", "fmt, clippy, test"]
+artifact = "conf-results"        # results.jsonl, summary.json, expected-pass.txt
 max_layer = 8
 ```
 

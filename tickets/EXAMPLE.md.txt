@@ -1,0 +1,32 @@
++++
+id = "T-0042"
+title = "calculate_baseline"
+kind = "algorithm"
+tier = "haiku"
+scope = ["crates/barre/src/algorithm/baseline.rs"]
+read = ["docs/API.md", "crates/barre/src/algorithm/baseline.rs", "crates/barre/src/algorithm/align.rs",
+        "crates/barre/src/node/layoutable_children.rs"]
+spec = ["calculateBaseline", "isBaselineLayout"]
+target = [
+  "generated/YGAlignItemsTest/YogaTest.align_baseline",
+  "YGAlignBaselineTest/",
+  "YGBaselineFuncTest/",
+]
+needs = []
+priority = 10
++++
+Port `yoga/algorithm/Baseline.cpp`. `crates/barre/src/algorithm/baseline.rs`
+already has both functions with their Yoga signatures; their bodies call
+`not_implemented!`. `calculate_layout_impl` already calls them where Yoga
+does, so only this file changes.
+
+- `calculate_baseline` walks the node's layoutable children the way Yoga
+  does: use `LayoutableChildren` (docs/API.md), not `node.children()`, so
+  `display: contents` children are handled the same way.
+- A node's baseline function is `node.baseline(width, height)`; it already
+  publishes the same events Yoga's `Node::baseline` does. Do not call the
+  user callback directly.
+- `resolve_child_alignment` is in `algorithm/align.rs`; do not reimplement it.
+- Layout results are read through `node.layout()` accessors
+  (`measured_dimension`, `position`), as in Yoga. `position(PhysicalEdge::Top)`
+  is Yoga's `getLayout().position(PhysicalEdge::Top)`.
