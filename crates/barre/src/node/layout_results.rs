@@ -108,6 +108,10 @@ pub struct FlexBasisAnchor {
     /// `singleFlexChild`) a basis of 0; the replay must be followed by the
     /// same write. Fits in the struct's padding (still 28 bytes).
     pub single_flex_child_pending: bool,
+    /// Set when such a call found no replay pending: the same write is
+    /// deferred to the start of the node's next run in this layout (perf;
+    /// `calculate_layout_internal`). Also in the padding (still 28 bytes).
+    pub single_flex_child_deferred: bool,
 }
 
 impl Default for FlexBasisAnchor {
@@ -124,6 +128,7 @@ impl Default for FlexBasisAnchor {
             reason: LayoutPassReason::Initial,
             replay_pending: false,
             single_flex_child_pending: false,
+            single_flex_child_deferred: false,
         }
     }
 }

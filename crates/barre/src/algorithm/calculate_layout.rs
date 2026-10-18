@@ -856,18 +856,12 @@ fn find_single_flex_child<'a, N: LayoutNode<'a>>(
 /// call that was answered from an earlier layout's cache entry instead.
 fn write_single_flex_child_basis<'a, N: LayoutNode<'a>>(node: N, generation_count: u32) {
     if let Some(child) = find_single_flex_child(node, SizingMode::StretchFit) {
-        write_zero_flex_basis(child, generation_count);
-    }
-}
-
-/// The write of [`write_single_flex_child_basis`] for an already found
-/// single flex `child`.
-fn write_zero_flex_basis<'a, N: LayoutNode<'a>>(child: N, generation_count: u32) {
-    // `compute_flex_basis_for_children` skips a `display: none` child before
-    // the write.
-    if child.style().display() != Display::None {
-        child.set_layout_computed_flex_basis_generation(generation_count);
-        child.set_layout_computed_flex_basis(0.0);
+        // `compute_flex_basis_for_children` skips a `display: none` child
+        // before the write.
+        if child.style().display() != Display::None {
+            child.set_layout_computed_flex_basis_generation(generation_count);
+            child.set_layout_computed_flex_basis(0.0);
+        }
     }
 }
 
@@ -3231,11 +3225,11 @@ fn is_fixed_size_measure<'a, N: LayoutNode<'a>>(
         && fixed_axis(available_height, height_sizing_mode, FlexDirection::Column)
 }
 
-/// barre-only (yoga#2019), no Yoga counterpart: if a run of `node` (with
+/// barre-only (yoga#2019), no Yoga counterpart: whether a run of `node` (with
 /// layout children and no measure function) for this call would reach
-/// `compute_flex_basis_for_children` with a `StretchFit` main axis and find a
-/// single flex child there, that is, give it a basis of 0, that child.
-fn single_flex_child_of_call<'a, N: LayoutNode<'a>>(
+/// `compute_flex_basis_for_children` with a `StretchFit` main axis, where a
+/// single flex child (`find_single_flex_child`) gets a basis of 0.
+fn reaches_single_flex_child_basis<'a, N: LayoutNode<'a>>(
     node: N,
     available_width: f32,
     available_height: f32,
@@ -3244,14 +3238,14 @@ fn single_flex_child_of_call<'a, N: LayoutNode<'a>>(
     owner_direction: Direction,
     owner_width: f32,
     perform_layout: bool,
-) -> Option<N> {
+) -> bool {
     let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
         width_sizing_mode
     } else {
         height_sizing_mode
     };
-    if main_axis_sizing_mode != SizingMode::StretchFit
-        || is_fixed_size_measure(
+    main_axis_sizing_mode == SizingMode::StretchFit
+        && !is_fixed_size_measure(
             node,
             available_width,
             available_height,
@@ -3261,10 +3255,6 @@ fn single_flex_child_of_call<'a, N: LayoutNode<'a>>(
             owner_width,
             perform_layout,
         )
-    {
-        return None;
-    }
-    find_single_flex_child(node, SizingMode::StretchFit)
 }
 
 /// barre-only (yoga#2019), no Yoga counterpart: the cache entry a lookup hit.
@@ -3317,11 +3307,16 @@ fn earlier_layout_container_hit<'a, N: LayoutNode<'a>>(
     // earlier layout, so record it for replay before the next real
     // run.
     if starts_anchor {
+        // A write deferred under the anchor this one replaces (below) still
+        // has to happen before this anchor's replay.
+        let previous = layout.flex_basis_anchor.get();
         layout.flex_basis_anchor.set(FlexBasisAnchor {
             replay_pending: true,
+            single_flex_child_deferred: previous.generation == generation_count
+                && previous.single_flex_child_deferred,
             ..this_call
         });
-    } else if let Some(single_flex_child) = single_flex_child_of_call(
+    } else if reaches_single_flex_child_basis(
         node,
         available_width,
         available_height,
@@ -3332,19 +3327,35 @@ fn earlier_layout_container_hit<'a, N: LayoutNode<'a>>(
         perform_layout,
     ) {
         // barre-only (yoga#2019): in a fresh layout this call ran and
-        // its `singleFlexChild` shortcut gave the single flex child a
-        // basis of 0. Make that write now, or right after the pending
+        // its `singleFlexChild` shortcut gave the single flex child (if
+        // any) a basis of 0. Make that write right after the pending
         // replay of the anchor if there is one (a fresh layout ran the
-        // anchor first). Found by the fuzzer,
-        // `barre-only-basis-mode0`.
+        // anchor first). Found by the fuzzer, `barre-only-basis-mode0`.
+        //
+        // Otherwise the write is deferred to the start of the node's next
+        // run in this layout, `run_and_store` (perf: no child scan on the
+        // hit path, and none at all for a node that does not run again).
+        // Only the node's own runs read or rewrite its children's bases,
+        // and a basis stamped with an earlier generation is rewritten
+        // before it is read, so the deferred write has the same effect as
+        // an immediate one. (Assumes no child is marked dirty from inside
+        // this layout, e.g. by a measure function, which would reset its
+        // basis in between.) A non-anchor call implies an anchor of this
+        // generation, which the flag is valid with.
         let pending = layout.flex_basis_anchor.get();
         if pending.generation == generation_count && pending.replay_pending {
             layout.flex_basis_anchor.set(FlexBasisAnchor {
                 single_flex_child_pending: true,
                 ..pending
             });
+        } else if pending.generation == generation_count {
+            layout.flex_basis_anchor.set(FlexBasisAnchor {
+                single_flex_child_deferred: true,
+                ..pending
+            });
         } else {
-            write_zero_flex_basis(single_flex_child, generation_count);
+            // Defensive: no anchor of this generation to hold the flag.
+            write_single_flex_child_basis(node, generation_count);
         }
     }
     // barre-only (yoga#2019): a fresh layout ran this call and stored
@@ -3397,6 +3408,17 @@ fn run_and_store<'a, N: LayoutNode<'a>>(
 ) {
     let layout = node.layout();
     if has_children {
+        // barre-only (yoga#2019): the `singleFlexChild` zero-basis write of
+        // a call answered from an earlier layout's cache, deferred to here
+        // by `earlier_layout_container_hit`.
+        let deferred = layout.flex_basis_anchor.get();
+        if deferred.generation == generation_count && deferred.single_flex_child_deferred {
+            layout.flex_basis_anchor.set(FlexBasisAnchor {
+                single_flex_child_deferred: false,
+                ..deferred
+            });
+            write_single_flex_child_basis(node, generation_count);
+        }
         // barre-only (yoga#2019): replay, measure-only, the anchor call
         // the cache skipped, so the children get exactly the bases (and
         // their subtrees the calls) a fresh layout gave them before this
@@ -3710,6 +3732,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         reason,
         replay_pending: false,
         single_flex_child_pending: false,
+        single_flex_child_deferred: false,
     };
     let anchor = match stored {
         Some(stored) if !starts_anchor => stored,
