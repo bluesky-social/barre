@@ -3518,19 +3518,15 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                 // flag.
                 let pending = layout.flex_basis_anchor.get();
                 if pending.generation == generation_count && pending.replay_pending {
-                    FlexBasisAnchor::set_flags(
-                        &layout.flex_basis_anchor,
-                        pending.replay_pending,
-                        true,
-                        pending.single_flex_child_deferred,
-                    );
+                    layout.flex_basis_anchor.set(FlexBasisAnchor {
+                        single_flex_child_pending: true,
+                        ..pending
+                    });
                 } else if pending.generation == generation_count {
-                    FlexBasisAnchor::set_flags(
-                        &layout.flex_basis_anchor,
-                        pending.replay_pending,
-                        pending.single_flex_child_pending,
-                        true,
-                    );
+                    layout.flex_basis_anchor.set(FlexBasisAnchor {
+                        single_flex_child_deferred: true,
+                        ..pending
+                    });
                 } else {
                     // Defensive: no anchor of this generation to hold the flag.
                     write_single_flex_child_basis(node, generation_count);
@@ -3571,12 +3567,10 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             // deferred to here by the hit path above.
             let deferred = layout.flex_basis_anchor.get();
             if deferred.generation == generation_count && deferred.single_flex_child_deferred {
-                FlexBasisAnchor::set_flags(
-                    &layout.flex_basis_anchor,
-                    deferred.replay_pending,
-                    deferred.single_flex_child_pending,
-                    false,
-                );
+                layout.flex_basis_anchor.set(FlexBasisAnchor {
+                    single_flex_child_deferred: false,
+                    ..deferred
+                });
                 write_single_flex_child_basis(node, generation_count);
             }
             // barre-only (yoga#2019): replay, measure-only, the anchor call
@@ -3586,12 +3580,11 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             // update; the real run below overwrites what this sets on `node`.
             let pending = layout.flex_basis_anchor.get();
             if pending.generation == generation_count && pending.replay_pending {
-                FlexBasisAnchor::set_flags(
-                    &layout.flex_basis_anchor,
-                    false,
-                    false,
-                    pending.single_flex_child_deferred,
-                );
+                layout.flex_basis_anchor.set(FlexBasisAnchor {
+                    replay_pending: false,
+                    single_flex_child_pending: false,
+                    ..pending
+                });
                 crate::stat!(|s| {
                     fn subtree_retainable<'a, N: LayoutNode<'a>>(n: N) -> bool {
                         !n.has_measure_func()

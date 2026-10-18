@@ -162,28 +162,6 @@ impl Default for FlexBasisAnchor {
     }
 }
 
-impl FlexBasisAnchor {
-    /// barre-only (yoga#2019): sets the three flags of the anchor in `cell`,
-    /// leaving its other fields as they are. The same as
-    /// `cell.set(FlexBasisAnchor { replay_pending, ..cell.get() })` and so on,
-    /// but it writes only the flags (perf, as [`CachedMeasurement::restamp`]).
-    #[inline]
-    pub fn set_flags(
-        cell: &Cell<FlexBasisAnchor>,
-        replay_pending: bool,
-        single_flex_child_pending: bool,
-        single_flex_child_deferred: bool,
-    ) {
-        let anchor = cell.as_ptr();
-        // SAFETY: as in `CachedMeasurement::restamp`.
-        unsafe {
-            (*anchor).replay_pending = replay_pending;
-            (*anchor).single_flex_child_pending = single_flex_child_pending;
-            (*anchor).single_flex_child_deferred = single_flex_child_deferred;
-        }
-    }
-}
-
 const _: () = assert!(std::mem::size_of::<CachedMeasurement>() == 40);
 const _: () = assert!(std::mem::size_of::<FlexBasisAnchor>() == 28);
 
