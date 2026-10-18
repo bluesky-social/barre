@@ -388,11 +388,13 @@ re-measures 150 texts.) It shows in two forms:
 - **Across layouts** (`resize`, `fabric50/commit`): a leaf is asked for a
   width less than a pixel from one it was measured at in an earlier layout.
   This is yoga#1784's mechanism, and Yoga's reuse changes the result:
-  `resize` with `round` has Yoga's checksum, not barre's; in `fabric50` the
-  timestamp of the edited cell ends 1/3 pt to the left in barre. (Its
-  checksum also differs from Yoga's in every variant because of one other
-  timestamp that is 1/3 pt apart from the first layout on, presumably
-  finding 3's FMA difference; the bench reports it as a mismatch.) The clone
+  `resize` with `round` has Yoga's checksum, not barre's (27 nodes, the
+  meta-row texts, 1/3 pt apart); in `fabric50` the timestamp of the edited
+  cell ends 1/3 pt to the left in barre. With Yoga built
+  `-ffp-contract=off` those are the only differences, and `round` gives
+  Yoga's checksum on both. (With RN's default contraction one more
+  timestamp in `fabric50` is 1/3 pt apart from the first layout on:
+  finding 3's FMA difference. The bench reports it as a mismatch.) The clone
   workload's sub-pixel timestamp edit is what reproduces the device's excess:
   real glyph advances are fractional, so editing one text (a timestamp, a
   count) moves the available width of a shrinking neighbour by a fraction of
