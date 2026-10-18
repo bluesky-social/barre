@@ -3296,7 +3296,6 @@ fn has_layout_children<'a, N: LayoutNode<'a>>(node: N) -> bool {
 /// child whose flex basis can be retained by `compute_flex_basis_for_child`'s
 /// resolved branch (in flow, displayed, and a non-`auto` processed basis), so
 /// that a cached result may depend on bases written under another anchor.
-#[inline(never)]
 fn has_retainable_flex_basis_child<'a, N: LayoutNode<'a>>(node: N) -> bool {
     node.layout_children().any(|child| {
         child.style().display() != Display::None
