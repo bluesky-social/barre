@@ -127,6 +127,21 @@ whatever it picks up.
    - (Done: the perf-ticket verification convention is in `docs/HARNESS.md`,
      and `docs/PLAN.md` no longer says "Locally only for now".)
 
+## Benchmark regression check (2026-10-18)
+
+Added on branch `bench-compare`, report-only: `.github/scripts/bench_compare.py`
+compares a bench run with the last run on `main` per workload (barre/yoga
+ratio, REGRESSION / WATCH / IMPROVED), reports "faster than Yoga: N of M
+(excluding micro/)" (27 of 29 in run `9122b937ed`) and what a gate would have
+done. `bench/expected-faster.txt` is the ratchet list. `bench.yml` writes it to
+the job summary; the README block and the `bench-results` table carry the
+headline. It cannot fail CI. **Not yet verified in GitHub**: label a PR `bench`
+to exercise the workflow steps and the baseline fetch. Thresholds, noise data,
+waiver format and the promotion plan: docs/BENCH.md, "Regression check and the
+faster-than-Yoga metric". Open: after a few weeks of history, decide whether to
+promote it (`--enforce`, `required_checks` in `harness/orch.toml`, which this
+change did not touch).
+
 ## Open questions for Samuel
 
 - **LICENSE:** there's no LICENSE file; `Cargo.toml` says MIT. Who should be
