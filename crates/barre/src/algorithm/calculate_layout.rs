@@ -815,29 +815,17 @@ pub fn calculate_available_inner_dimension<'a, N: LayoutNode<'a>>(
     available_inner_dim
 }
 
-/// `computeFlexBasisForChildren`.
-fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
+/// The `singleFlexChild` search at the start of `computeFlexBasisForChildren`.
+///
+/// Factored out of [`compute_flex_basis_for_children`] (barre only, same code)
+/// so that `calculate_layout_internal` can also make the write it leads to for
+/// a call answered from an earlier layout's cache (yoga#2019,
+/// [`write_single_flex_child_basis`]).
+fn find_single_flex_child<'a, N: LayoutNode<'a>>(
     node: N,
-    available_inner_width: f32,
-    available_inner_height: f32,
-    owner_width: f32,
-    owner_height: f32,
-    width_sizing_mode: SizingMode,
-    height_sizing_mode: SizingMode,
-    direction: Direction,
-    main_axis: FlexDirection,
-    perform_layout: bool,
-    layout_marker_data: &mut LayoutData,
-    depth: u32,
-    generation_count: u32,
-) -> f32 {
-    let mut total_outer_flex_basis = 0.0f32;
+    sizing_mode_main_dim: SizingMode,
+) -> Option<N> {
     let mut single_flex_child: Option<N> = None;
-    let sizing_mode_main_dim = if is_row(main_axis) {
-        width_sizing_mode
-    } else {
-        height_sizing_mode
-    };
     // If there is only one child with flexGrow + flexShrink it means we can
     // set the computedFlexBasis to 0 instead of measuring and shrinking /
     // flexing the child to exactly match the remaining space
@@ -858,6 +846,48 @@ fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
             }
         }
     }
+    single_flex_child
+}
+
+/// barre-only (yoga#2019), no Yoga counterpart: the flex-basis write a run of
+/// `node` with a `StretchFit` main axis makes through
+/// [`compute_flex_basis_for_children`]'s `singleFlexChild` shortcut (a basis
+/// of 0 for the single flex child, stamped with `generation_count`), for a
+/// call that was answered from an earlier layout's cache entry instead.
+fn write_single_flex_child_basis<'a, N: LayoutNode<'a>>(node: N, generation_count: u32) {
+    if let Some(child) = find_single_flex_child(node, SizingMode::StretchFit) {
+        // `compute_flex_basis_for_children` skips a `display: none` child
+        // before the write.
+        if child.style().display() != Display::None {
+            child.set_layout_computed_flex_basis_generation(generation_count);
+            child.set_layout_computed_flex_basis(0.0);
+        }
+    }
+}
+
+/// `computeFlexBasisForChildren`.
+fn compute_flex_basis_for_children<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_inner_width: f32,
+    available_inner_height: f32,
+    owner_width: f32,
+    owner_height: f32,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    direction: Direction,
+    main_axis: FlexDirection,
+    perform_layout: bool,
+    layout_marker_data: &mut LayoutData,
+    depth: u32,
+    generation_count: u32,
+) -> f32 {
+    let mut total_outer_flex_basis = 0.0f32;
+    let sizing_mode_main_dim = if is_row(main_axis) {
+        width_sizing_mode
+    } else {
+        height_sizing_mode
+    };
+    let single_flex_child = find_single_flex_child(node, sizing_mode_main_dim);
 
     for child in node.layout_children() {
         child.process_dimensions();
@@ -1953,6 +1983,7 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
                 // baseline.
                 let ascent = calculate_baseline_of_child(
                     child,
+                    perform_layout,
                     direction,
                     available_inner_width,
                     available_inner_height,
@@ -2003,8 +2034,17 @@ fn justify_main_axis<'a, N: LayoutNode<'a>>(
 /// `perform_layout`), which writes real measured dimensions down its subtree
 /// before its baseline is read. The child's measured size is unchanged, so the
 /// owner's flex results do not change. The shortcut itself is not changed.
+///
+/// When the owner is only being measured (`owner_perform_layout` false), this
+/// lays the child's subtree out outside the owner's layout pass. A later
+/// layout pass of the owner, or of any ancestor, answered from a layout cache
+/// entry stored in an earlier layout then skips laying the subtree out again
+/// and leaves it as this call left it, where a fresh layout runs that pass and
+/// lays it out again (found by the fuzzer, `barre-only-baseline`). So this
+/// also invalidates those entries ([`invalidate_earlier_layout_cache_entries`]).
 fn calculate_baseline_of_child<'a, N: LayoutNode<'a>>(
     child: N,
+    owner_perform_layout: bool,
     direction: Direction,
     available_inner_width: f32,
     available_inner_height: f32,
@@ -2034,8 +2074,31 @@ fn calculate_baseline_of_child<'a, N: LayoutNode<'a>>(
             depth,
             generation_count,
         );
+        if !owner_perform_layout {
+            invalidate_earlier_layout_cache_entries(child, generation_count);
+        }
     }
     calculate_baseline(child)
+}
+
+/// barre-only (yoga#1932), no Yoga counterpart: after
+/// [`calculate_baseline_of_child`] laid `node`'s subtree out during a
+/// measure-only pass of its owner, invalidates the layout cache entry
+/// (`cached_layout`) of every ancestor of `node` that was stored in a layout
+/// other than this one. A hit on such an entry assumes the subtree still
+/// holds what that layout's run left in it; a fresh layout has no such entry
+/// and runs the pass. Entries stored in this layout stay: a fresh layout
+/// stores and hits them the same way. Measurement entries stay too: a
+/// measurement does not read the subtree's layout.
+fn invalidate_earlier_layout_cache_entries<'a, N: LayoutNode<'a>>(node: N, generation_count: u32) {
+    let mut ancestor = node.owner();
+    while let Some(owner) = ancestor {
+        let layout = owner.layout();
+        if layout.cached_layout.get().generation != generation_count {
+            layout.cached_layout.set(CachedMeasurement::default());
+        }
+        ancestor = owner.owner();
+    }
 }
 
 /// `calculateLayoutImpl`: the main routine, implementing a subset of the
@@ -2772,6 +2835,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
                     if resolve_child_alignment(node, child) == Align::Baseline {
                         let ascent = calculate_baseline_of_child(
                             child,
+                            perform_layout,
                             direction,
                             available_inner_width,
                             available_inner_height,
@@ -2920,6 +2984,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
                                 current_lead + max_ascent_for_current_line
                                     - calculate_baseline_of_child(
                                         child,
+                                        perform_layout,
                                         direction,
                                         available_inner_width,
                                         available_inner_height,
@@ -3118,6 +3183,77 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
     }
 }
 
+/// barre-only (yoga#2019), no Yoga counterpart: whether a run of `node` (with
+/// layout children and no measure function) for this call returns from
+/// `calculate_layout_impl` through the `measure_node_with_fixed_size` shortcut
+/// (a measure-only call whose two sizes are fixed), before any flex basis is
+/// computed. The same test on the same margins as there.
+fn is_fixed_size_measure<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_width: f32,
+    available_height: f32,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    owner_direction: Direction,
+    owner_width: f32,
+    perform_layout: bool,
+) -> bool {
+    // `is_fixed_size` is false for `MaxContent` whatever the size, so the
+    // margins are only needed past this test.
+    if perform_layout
+        || width_sizing_mode == SizingMode::MaxContent
+        || height_sizing_mode == SizingMode::MaxContent
+    {
+        return false;
+    }
+    // The margins as `calculate_layout_impl` computes them.
+    let style = node.style();
+    let direction = node.resolve_direction(owner_direction);
+    let flex_row_direction = resolve_direction(FlexDirection::Row, direction);
+    let flex_column_direction = resolve_direction(FlexDirection::Column, direction);
+    let margin_axis_row =
+        style.compute_inline_start_margin(flex_row_direction, direction, owner_width)
+            + style.compute_inline_end_margin(flex_row_direction, direction, owner_width);
+    let margin_axis_column =
+        style.compute_inline_start_margin(flex_column_direction, direction, owner_width)
+            + style.compute_inline_end_margin(flex_column_direction, direction, owner_width);
+    is_fixed_size(available_width - margin_axis_row, width_sizing_mode)
+        && is_fixed_size(available_height - margin_axis_column, height_sizing_mode)
+}
+
+/// barre-only (yoga#2019), no Yoga counterpart: whether a run of `node` (with
+/// layout children and no measure function) for this call would reach
+/// `compute_flex_basis_for_children` with a `StretchFit` main axis and find a
+/// single flex child there, that is, give it a basis of 0.
+fn is_single_flex_child_call<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_width: f32,
+    available_height: f32,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    owner_direction: Direction,
+    owner_width: f32,
+    perform_layout: bool,
+) -> bool {
+    let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
+        width_sizing_mode
+    } else {
+        height_sizing_mode
+    };
+    main_axis_sizing_mode == SizingMode::StretchFit
+        && !is_fixed_size_measure(
+            node,
+            available_width,
+            available_height,
+            width_sizing_mode,
+            height_sizing_mode,
+            owner_direction,
+            owner_width,
+            perform_layout,
+        )
+        && find_single_flex_child(node, SizingMode::StretchFit).is_some()
+}
+
 /// barre-only (yoga#2019), no Yoga counterpart: the cache entry a lookup hit.
 fn cached_entry(
     layout: &crate::node::layout_results::LayoutResults,
@@ -3149,8 +3285,14 @@ fn has_retainable_flex_basis_child<'a, N: LayoutNode<'a>>(node: N) -> bool {
 /// matches a fresh layout: it tracks each container's flex-basis anchor
 /// ([`FlexBasisAnchor`]), replays an anchor call answered from an earlier
 /// layout's cache before the next real run, stamps stored entries with the
-/// generation and anchor key, and refuses an earlier layout's entry computed
-/// under a different anchor when a child's basis can be retained. It also
+/// generation and anchor key (and restamps an earlier layout's entry a
+/// container hits, as a fresh layout would have stored it), makes the
+/// `singleFlexChild` zero-basis write of a `StretchFit`-main call answered
+/// from an earlier layout's cache, and refuses an earlier layout's entry
+/// computed under a different anchor when a child's basis can be retained.
+/// A call starts an anchor when it is the node's first in the layout that
+/// computes flex bases (not a fixed-size measurement) or its available main
+/// size is undefined. It also
 /// stamps entries with the owner size, which `find_cached_result` keys on so
 /// that an entry whose node's own percent padding, margin (yoga#1626,
 /// yoga#1784) or min/max (yoga#1003) resolve differently under the current
@@ -3210,30 +3352,53 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     // barre-only (yoga#1552, yoga#2019): track this node's flex-basis
     // anchor. A call starts a new anchor when it is the node's first in this
     // layout (read `generation_count` before the store at the end) or its
-    // main axis is `MaxContent` (every non-`auto`-basis child then goes
-    // through a rewriting branch).
+    // available main-axis size is undefined: `compute_flex_basis_for_child`
+    // then sends every non-`auto`-basis child through a rewriting branch,
+    // because its resolved-basis branch (the one that keeps a basis) needs a
+    // defined inner main size. A `MaxContent` main axis is not enough: a
+    // caller can pass a defined size with it, and that call keeps the bases
+    // (found by the fuzzer, `slots-barre-only`).
     let has_children = !node.has_measure_func() && node.layout_child_count() > 0;
     // Only read the stored anchor when the cheaper conditions do not already
     // start a new one; it is the anchor in effect only in that case.
     let stored = if layout.generation_count.get() != generation_count {
         None
     } else {
-        let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
-            width_sizing_mode
+        let available_main_size = if is_row(node.style().flex_direction()) {
+            available_width
         } else {
-            height_sizing_mode
+            available_height
         };
-        if main_axis_sizing_mode == SizingMode::MaxContent {
+        if is_undefined(available_main_size) {
             None
         } else {
             Some(layout.flex_basis_anchor.get())
         }
     };
-    let starts_anchor = match stored {
+    let fixed_size_measure = || {
+        is_fixed_size_measure(
+            node,
+            available_width,
+            available_height,
+            width_sizing_mode,
+            height_sizing_mode,
+            owner_direction,
+            owner_width,
+            perform_layout,
+        )
+    };
+    let would_start_anchor = match stored {
         None => true,
-        // Defensive: no anchor yet this layout.
+        // No anchor yet this layout: the node's first call in it was a
+        // fixed-size measurement (below), or, defensively, none was recorded.
         Some(stored) => stored.generation != generation_count,
     };
+    // A fixed-size measurement computes no flex basis, so it does not start
+    // an anchor even as the node's first call in this layout: in a fresh
+    // layout the first call that writes the children's bases (the resolved
+    // values, `compute_flex_basis_for_child`) is a later one (found by the
+    // fuzzer: seed 5580).
+    let starts_anchor = would_start_anchor && !(has_children && fixed_size_measure());
     let this_call = FlexBasisAnchor {
         generation: generation_count,
         available_width,
@@ -3245,6 +3410,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
         owner_direction,
         reason,
         replay_pending: false,
+        single_flex_child_pending: false,
     };
     let anchor = match stored {
         Some(stored) if !starts_anchor => stored,
@@ -3265,22 +3431,77 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                 && entry.anchor_width_sizing_mode == anchor.width_sizing_mode
                 && entry.anchor_height_sizing_mode == anchor.height_sizing_mode)
             && has_retainable_flex_basis_child(node)
+            // A fixed-size measurement reads no flex basis.
+            && !fixed_size_measure()
         {
             rejected = Some(cached);
             cached_results = None;
         }
     }
 
+    // Read before the hit path restamps the entry.
+    #[cfg(feature = "stats")]
+    let hit_earlier_generation = !need_to_visit_node
+        && cached_results.is_some_and(|c| cached_entry(layout, c).generation != generation_count);
+
     if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
         let entry = cached_entry(layout, cached);
-        // barre-only (yoga#2019): in a fresh layout this call would have run
-        // and rewritten the children's bases; it was answered from an earlier
-        // layout, so record it for replay before the next real run.
-        if has_children && starts_anchor && entry.generation != generation_count {
-            layout.flex_basis_anchor.set(FlexBasisAnchor {
-                replay_pending: true,
-                ..this_call
-            });
+        if has_children && entry.generation != generation_count {
+            // barre-only (yoga#2019): in a fresh layout this call would have
+            // run and rewritten the children's bases; it was answered from an
+            // earlier layout, so record it for replay before the next real
+            // run.
+            if starts_anchor {
+                layout.flex_basis_anchor.set(FlexBasisAnchor {
+                    replay_pending: true,
+                    ..this_call
+                });
+            } else if is_single_flex_child_call(
+                node,
+                available_width,
+                available_height,
+                width_sizing_mode,
+                height_sizing_mode,
+                owner_direction,
+                owner_width,
+                perform_layout,
+            ) {
+                // barre-only (yoga#2019): in a fresh layout this call ran and
+                // its `singleFlexChild` shortcut gave the single flex child a
+                // basis of 0. Make that write now, or right after the pending
+                // replay of the anchor if there is one (a fresh layout ran the
+                // anchor first). Found by the fuzzer,
+                // `barre-only-basis-mode0`.
+                let pending = layout.flex_basis_anchor.get();
+                if pending.generation == generation_count && pending.replay_pending {
+                    layout.flex_basis_anchor.set(FlexBasisAnchor {
+                        single_flex_child_pending: true,
+                        ..pending
+                    });
+                } else {
+                    write_single_flex_child_basis(node, generation_count);
+                }
+            }
+            // barre-only (yoga#2019): a fresh layout ran this call and stored
+            // this entry in this layout, with the anchor in effect now, so
+            // restamp it. Otherwise the next call in this layout that hits it
+            // is taken for an earlier layout's hit again, which a fresh layout
+            // does not have: it would record (and replay) the anchor a second
+            // time, after runs that rewrote the children's bases since, or be
+            // refused against an anchor that has moved on (found by the
+            // fuzzer, `barre-only-basis-mode2`).
+            let restamped = CachedMeasurement {
+                generation: generation_count,
+                anchor_available_width: anchor.available_width,
+                anchor_available_height: anchor.available_height,
+                anchor_width_sizing_mode: anchor.width_sizing_mode,
+                anchor_height_sizing_mode: anchor.height_sizing_mode,
+                ..entry
+            };
+            match cached {
+                CachedResult::Layout => layout.cached_layout.set(restamped),
+                CachedResult::Measurement(i) => layout.cached_measurements[i].set(restamped),
+            }
         }
         layout.set_measured_dimension(Dimension::Width, entry.computed_width);
         layout.set_measured_dimension(Dimension::Height, entry.computed_height);
@@ -3301,6 +3522,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             if pending.generation == generation_count && pending.replay_pending {
                 layout.flex_basis_anchor.set(FlexBasisAnchor {
                     replay_pending: false,
+                    single_flex_child_pending: false,
                     ..pending
                 });
                 crate::stat!(|s| {
@@ -3336,6 +3558,9 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                     depth,
                     generation_count,
                 );
+                if pending.single_flex_child_pending {
+                    write_single_flex_child_basis(node, generation_count);
+                }
             }
             if starts_anchor {
                 layout.flex_basis_anchor.set(this_call);
@@ -3487,11 +3712,11 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             Outcome::Visit
         } else if rejected.is_some() {
             Outcome::Rejected
-        } else if let Some(cached) = cached_results {
-            if cached_entry(layout, cached).generation == generation_count {
-                Outcome::HitSameGen
-            } else {
+        } else if cached_results.is_some() {
+            if hit_earlier_generation {
                 Outcome::HitEarlierGen
+            } else {
+                Outcome::HitSameGen
             }
         } else {
             Outcome::Miss

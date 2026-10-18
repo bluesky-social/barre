@@ -68,6 +68,19 @@ whatever it picks up.
 2. **Perf toward 0.5× Yoga's time** (`docs/BENCH.md` has the ranked ideas and
    calls-per-node findings):
    - The rest of the rotate regression (T-0006's replays).
+   - **Claw back the cost of the barre-only relayout fixes** (stack layer
+     "fix-barre-only-relayout"). Measured 2026-10-18 with `bench/run --rev
+     REV rn/` (REV = the stack top before vs after; two runs each, within
+     about 1% of each other): rn/ geomean 0.52× → 0.55×, and on `rn/feed50`
+     `clean` 12 → 16 ns, `text_same_size` 10.6 → 11.8 µs (+11%), `rotate`
+     233 → 247 µs (0.91× → 0.97×), `text_change` +7%, `insert_remove` +6%;
+     fresh layouts +1–3%. Per commit, no single culprit: 0a99eec costs
+     nothing, then restamp on hit (074d3df) +2 ns on `clean` and about +5 µs
+     on `rotate`, baseline invalidation (2135442) about +4 µs, the
+     single-flex-child write (1fb7b09) about +7 µs, the fixed-size check
+     (b5fab9e) +2 ns on `clean`. It was accepted because correctness comes
+     first. Look for the same checks done on colder paths, or merged into
+     the existing lookups.
    - Fewer edge lookups.
    - A hot/cold split of node data, and a compact `Style`, which also
      shrinks the RN blob.
@@ -81,12 +94,20 @@ whatever it picks up.
    `./fuzz --yoga check ...` to compare with real Yoga). At seeds 1-10000 it
    fails 2358 of 30000 (seed, mode) pairs (7.9%), of which Yoga fails 19315
    (64%) of the same pairs. What is left to do, in order of importance:
-   - **Barre-only failures** (23 pairs at default knobs, more with `--wide`
-     and `--slots`): relayout ≠ fresh on barre where Yoga is fine. These
-     break our own correctness bar (`barre-only-*`, `slots-barre-only`), and
-     probably come from T-0006's anchor or T-0010's cache keys. Trace the
-     mechanism (the doc's names are inferred from minimised trees, not
-     traced), fix, and add a conformance test per repro.
+   - **Barre-only failures:** 23 → 14 pairs at default knobs with branch
+     `fix-barre-only-relayout` (35 → 22 `--wide`). Four mechanisms were
+     traced and fixed (an earlier layout's entry hit twice in one layout,
+     the `MaxContent`-anchor rule, the yoga#1932 baseline layout during a
+     measure pass, the skipped `singleFlexChild` zero basis), each with a
+     test in `conformance/tests/YGRelayoutFreshFuzzTest.cpp`. Of the 14 left
+     (docs/FUZZ.md, barre-only), 9 are two residuals of T-0006's anchor that
+     need a design decision, with failing tests in
+     `YGRelayoutFreshResidualTest.cpp`: a superseded anchor that is not
+     replayed (8 pairs; replaying it at the hit fixes them but breaks
+     "replays only before a real run", keeping both pending costs 28 B per
+     node) and a skipped non-anchor call (1 pair). The other 5 are
+     Yoga-shared mechanisms (margin reuse, cached-subtree rounding) that a
+     different cache history or the yoga#2035 divergence makes barre-only.
    - **Failures shared with Yoga:** margin in compatible-measurement reuse
      (`margin-reuse-*`) and the root cache hit skipping pixel rounding
      (`rounding-root-cache-hit`) were checked against the source;

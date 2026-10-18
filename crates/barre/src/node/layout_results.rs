@@ -101,6 +101,13 @@ pub struct FlexBasisAnchor {
     pub owner_direction: Direction,
     pub reason: LayoutPassReason,
     pub replay_pending: bool,
+    /// Set when, while this anchor waits for its replay, a call with a
+    /// `StretchFit` main axis was answered from an earlier layout's cache
+    /// entry. In a fresh layout that call ran after the anchor and gave the
+    /// node's single flex child (`computeFlexBasisForChildren`'s
+    /// `singleFlexChild`) a basis of 0; the replay must be followed by the
+    /// same write. Fits in the struct's padding (still 28 bytes).
+    pub single_flex_child_pending: bool,
 }
 
 impl Default for FlexBasisAnchor {
@@ -116,6 +123,7 @@ impl Default for FlexBasisAnchor {
             owner_direction: Direction::Inherit,
             reason: LayoutPassReason::Initial,
             replay_pending: false,
+            single_flex_child_pending: false,
         }
     }
 }
@@ -137,8 +145,10 @@ pub const MAX_CACHED_MEASUREMENTS: usize = 8;
 /// Known residuals this does not fix: measure-function
 /// leaves reused through `can_use_cached_measurement`'s compatible sizes;
 /// pixel-grid rounding re-applied to cached subtrees; history more than one
-/// level deep (only a node's own anchor is compared); the `singleFlexChild`
-/// zero basis written by a skipped `StretchFit`-main call; and cache-slot
+/// level deep (only a node's own anchor is compared, and only its latest
+/// skipped anchor is replayed, so the calls an earlier skipped anchor or a
+/// skipped non-anchor call made into the children are lost:
+/// `conformance/tests/YGRelayoutFreshResidualTest.cpp`); and cache-slot
 /// occupancy by earlier-layout entries.
 #[derive(Clone, Debug)]
 #[repr(C)]
