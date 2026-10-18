@@ -39,7 +39,15 @@ staticlib, or real Yoga with `--yoga`, like `./conf`.
 ./fuzz min --seed 6 --mode 0 --out x.case          # minimise one failure
 ./fuzz snippet x.case [--run]                      # standalone C++ repro
 ./fuzz compare a.json b.json                       # two `run --json` outputs
+./fuzz calls --seeds 2000 > b.txt                  # measure callbacks per relayout step
+./fuzz calls-compare b.txt y.txt                   # two `calls` outputs (e.g. --yoga)
 ```
+
+`calls` lays each case out at its sizes in turn (no fresh layouts, nothing
+compared) and prints `seed mode scale total c1,c2,...`, the measure callbacks
+of each layout; `calls-compare` lines two engines up by (seed, mode, scale):
+how often and by how much the first makes more callbacks, per scale.
+Report-only. docs/BENCH.md ("Measure calls against Yoga") has what it found.
 
 Worktrees need `BARRE_VENDOR=<checkout>/vendor`. Engine options go before
 the command: `--yoga`, `--lib PATH`, `--engine-root DIR`, `--debug` (barre-ffi
