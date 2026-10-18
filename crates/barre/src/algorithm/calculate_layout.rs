@@ -856,12 +856,18 @@ fn find_single_flex_child<'a, N: LayoutNode<'a>>(
 /// call that was answered from an earlier layout's cache entry instead.
 fn write_single_flex_child_basis<'a, N: LayoutNode<'a>>(node: N, generation_count: u32) {
     if let Some(child) = find_single_flex_child(node, SizingMode::StretchFit) {
-        // `compute_flex_basis_for_children` skips a `display: none` child
-        // before the write.
-        if child.style().display() != Display::None {
-            child.set_layout_computed_flex_basis_generation(generation_count);
-            child.set_layout_computed_flex_basis(0.0);
-        }
+        write_zero_flex_basis(child, generation_count);
+    }
+}
+
+/// The write of [`write_single_flex_child_basis`] for an already found
+/// single flex `child`.
+fn write_zero_flex_basis<'a, N: LayoutNode<'a>>(child: N, generation_count: u32) {
+    // `compute_flex_basis_for_children` skips a `display: none` child before
+    // the write.
+    if child.style().display() != Display::None {
+        child.set_layout_computed_flex_basis_generation(generation_count);
+        child.set_layout_computed_flex_basis(0.0);
     }
 }
 
@@ -3206,26 +3212,30 @@ fn is_fixed_size_measure<'a, N: LayoutNode<'a>>(
     {
         return false;
     }
-    // The margins as `calculate_layout_impl` computes them.
-    let style = node.style();
-    let direction = node.resolve_direction(owner_direction);
-    let flex_row_direction = resolve_direction(FlexDirection::Row, direction);
-    let flex_column_direction = resolve_direction(FlexDirection::Column, direction);
-    let margin_axis_row =
-        style.compute_inline_start_margin(flex_row_direction, direction, owner_width)
-            + style.compute_inline_end_margin(flex_row_direction, direction, owner_width);
-    let margin_axis_column =
-        style.compute_inline_start_margin(flex_column_direction, direction, owner_width)
-            + style.compute_inline_end_margin(flex_column_direction, direction, owner_width);
-    is_fixed_size(available_width - margin_axis_row, width_sizing_mode)
-        && is_fixed_size(available_height - margin_axis_column, height_sizing_mode)
+    // `is_fixed_size` is true for `StretchFit` whatever the size, so an
+    // axis's margins (as `calculate_layout_impl` computes them) are only
+    // computed for a `FitContent` axis. Same result as computing both, for
+    // less work on the hit path (barre-only, perf).
+    let fixed_axis = |available: f32, sizing_mode: SizingMode, axis: FlexDirection| {
+        if sizing_mode == SizingMode::StretchFit {
+            return true;
+        }
+        let style = node.style();
+        let direction = node.resolve_direction(owner_direction);
+        let flex_direction = resolve_direction(axis, direction);
+        let margin_axis = style.compute_inline_start_margin(flex_direction, direction, owner_width)
+            + style.compute_inline_end_margin(flex_direction, direction, owner_width);
+        is_fixed_size(available - margin_axis, sizing_mode)
+    };
+    fixed_axis(available_width, width_sizing_mode, FlexDirection::Row)
+        && fixed_axis(available_height, height_sizing_mode, FlexDirection::Column)
 }
 
-/// barre-only (yoga#2019), no Yoga counterpart: whether a run of `node` (with
+/// barre-only (yoga#2019), no Yoga counterpart: if a run of `node` (with
 /// layout children and no measure function) for this call would reach
 /// `compute_flex_basis_for_children` with a `StretchFit` main axis and find a
-/// single flex child there, that is, give it a basis of 0.
-fn is_single_flex_child_call<'a, N: LayoutNode<'a>>(
+/// single flex child there, that is, give it a basis of 0, that child.
+fn single_flex_child_of_call<'a, N: LayoutNode<'a>>(
     node: N,
     available_width: f32,
     available_height: f32,
@@ -3234,14 +3244,14 @@ fn is_single_flex_child_call<'a, N: LayoutNode<'a>>(
     owner_direction: Direction,
     owner_width: f32,
     perform_layout: bool,
-) -> bool {
+) -> Option<N> {
     let main_axis_sizing_mode = if is_row(node.style().flex_direction()) {
         width_sizing_mode
     } else {
         height_sizing_mode
     };
-    main_axis_sizing_mode == SizingMode::StretchFit
-        && !is_fixed_size_measure(
+    if main_axis_sizing_mode != SizingMode::StretchFit
+        || is_fixed_size_measure(
             node,
             available_width,
             available_height,
@@ -3251,7 +3261,10 @@ fn is_single_flex_child_call<'a, N: LayoutNode<'a>>(
             owner_width,
             perform_layout,
         )
-        && find_single_flex_child(node, SizingMode::StretchFit).is_some()
+    {
+        return None;
+    }
+    find_single_flex_child(node, SizingMode::StretchFit)
 }
 
 /// barre-only (yoga#2019), no Yoga counterpart: the cache entry a lookup hit.
@@ -3456,7 +3469,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                     replay_pending: true,
                     ..this_call
                 });
-            } else if is_single_flex_child_call(
+            } else if let Some(single_flex_child) = single_flex_child_of_call(
                 node,
                 available_width,
                 available_height,
@@ -3479,7 +3492,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
                         ..pending
                     });
                 } else {
-                    write_single_flex_child_basis(node, generation_count);
+                    write_zero_flex_basis(single_flex_child, generation_count);
                 }
             }
             // barre-only (yoga#2019): a fresh layout ran this call and stored
