@@ -321,7 +321,8 @@ fn owner_dependent_inputs_resolve_equal<'a, N: LayoutNode<'a>>(
 
 /// `calculateLayoutInternal` (the cache lookup): the entry of `node`'s layout
 /// cache (for `perform_layout`) or measurement cache whose results can be
-/// reused for these constraints, if any.
+/// reused for these constraints, if any, with that entry as read (so the
+/// caller does not read it again).
 ///
 /// Deliberately differs from Yoga in two ways. Each entry must also match
 /// on the node's own owner-relative inputs ([`owner_dependent_inputs_match`],
@@ -340,7 +341,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
     owner_width: f32,
     owner_height: f32,
     perform_layout: bool,
-) -> Option<CachedResult> {
+) -> Option<(CachedResult, CachedMeasurement)> {
     let layout = node.layout();
     let owner_key_matches = |entry: &CachedMeasurement| {
         owner_dependent_inputs_match(node, owner_direction, entry, owner_width, owner_height)
@@ -379,7 +380,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
             margin_axis_column,
         ) && owner_key_matches(&cached_layout)
         {
-            return Some(CachedResult::Layout);
+            return Some((CachedResult::Layout, cached_layout));
         }
 
         // Try to use the measurement cache.
@@ -400,7 +401,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
                 margin_axis_column,
             ) && owner_key_matches(&entry)
             {
-                return Some(CachedResult::Measurement(i));
+                return Some((CachedResult::Measurement(i), entry));
             }
         }
         None
@@ -413,7 +414,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
             && inexact_equals(cached_layout.available_height, available_height)
             && owner_key_matches(&cached_layout)
         {
-            Some(CachedResult::Layout)
+            Some((CachedResult::Layout, cached_layout))
         } else {
             None
         }
@@ -426,7 +427,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
                 && inexact_equals(entry.available_height, available_height)
                 && owner_key_matches(&entry)
             {
-                return Some(CachedResult::Measurement(i));
+                return Some((CachedResult::Measurement(i), entry));
             }
         }
         None

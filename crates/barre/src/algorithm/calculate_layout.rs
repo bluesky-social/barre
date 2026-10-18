@@ -3280,17 +3280,6 @@ fn reaches_single_flex_child_basis<'a, N: LayoutNode<'a>>(
         )
 }
 
-/// barre-only (yoga#2019), no Yoga counterpart: the cache entry a lookup hit.
-fn cached_entry(
-    layout: &crate::node::layout_results::LayoutResults,
-    cached: CachedResult,
-) -> CachedMeasurement {
-    match cached {
-        CachedResult::Layout => layout.cached_layout.get(),
-        CachedResult::Measurement(i) => layout.cached_measurements[i].get(),
-    }
-}
-
 /// `node.layout_child_count() > 0`, without counting when the node has no
 /// `display: contents` child (then the layout children are its children).
 /// Same answer; inlined on the cache-hit path (perf, barre only).
@@ -3460,8 +3449,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     // a different anchor, when the node has a child whose basis can be
     // retained. The rejected entry is overwritten in place by the store below.
     let mut rejected: Option<CachedResult> = None;
-    if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
-        let entry = cached_entry(layout, cached);
+    if let (false, Some((cached, entry))) = (need_to_visit_node, cached_results) {
         // The child scan runs last: it is the only part that walks children.
         if entry.generation != generation_count
             && has_children
@@ -3481,10 +3469,9 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     // Read before the hit path restamps the entry.
     #[cfg(feature = "stats")]
     let hit_earlier_generation = !need_to_visit_node
-        && cached_results.is_some_and(|c| cached_entry(layout, c).generation != generation_count);
+        && cached_results.is_some_and(|(_, entry)| entry.generation != generation_count);
 
-    if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
-        let entry = cached_entry(layout, cached);
+    if let (false, Some((cached, entry))) = (need_to_visit_node, cached_results) {
         if has_children && entry.generation != generation_count {
             // barre-only (yoga#2019): in a fresh layout this call would have
             // run and rewritten the children's bases; it was answered from an
