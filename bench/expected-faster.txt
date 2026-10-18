@@ -1,0 +1,33 @@
+# Workloads that comfortably beat Yoga: barre/yoga <= 0.90 in bench run 9122b937ed7e.
+# One name per line, # starts a comment. .github/scripts/bench_compare.py reports
+# "would fail" for any of these above 1.05x ("would fail (marginal)" above 1.00x).
+# Report-only for now (docs/BENCH.md). Regenerate from a run (names only ever
+# change on purpose, in their own commit):
+#   .github/scripts/bench_compare.py RESULT.json --update-list
+yoga/stack_with_flex
+yoga/align_stretch_undefined_axis
+yoga/nested_flex
+yoga/huge_nested.layout_only
+capture/feed-android
+capture/feed-android.clean
+capture/profile-ios
+capture/profile-ios.clean
+capture/rendering-sample-mac
+capture/rendering-sample-mac.clean
+capture/chat-mac
+capture/chat-mac.clean
+rn/feed50/fresh
+rn/feed50/clean
+rn/feed50/text_change
+rn/feed50/text_same_size
+rn/feed50/resize
+rn/feed50/insert_remove
+rn/deep5/fresh
+rn/deep10/fresh
+rn/deep15/fresh
+rn/deep20/fresh
+rn/deep20/clean
+rn/wide_column1000/fresh
+rn/wide_row200/fresh
+rn/wrap_grid300/fresh
+rn/absolute100/fresh

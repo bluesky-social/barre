@@ -5,14 +5,19 @@ Usage: bench_publish.py RESULT_JSON RESULT_MD BRANCH_DIR --sha SHA --repo OWNER/
 
 Copies the run into BRANCH_DIR/results/ (named by date and barre commit) and
 rewrites BRANCH_DIR/README.md: the latest table, then one line per run with
-its geometric mean barre/Yoga ratio, newest first.
+its geometric mean barre/Yoga ratio and its faster-than-Yoga count (docs/BENCH.md),
+newest first.
 """
 import argparse
 import datetime
 import json
 import math
 import shutil
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bench_compare  # noqa: E402
 
 
 def geomean(path):
@@ -24,6 +29,15 @@ def geomean(path):
             continue
         ratios.append(b["median"] / y["median"])
     return (math.exp(sum(map(math.log, ratios)) / len(ratios)), len(ratios)) if ratios else (None, 0)
+
+
+def faster(path):
+    """"27 of 29": workloads faster than Yoga, excluding micro/ (bench_compare.py)."""
+    try:
+        n, total = bench_compare.headline_counts(bench_compare.read_run(path)[1])
+    except (OSError, ValueError, KeyError):
+        return "–"
+    return f"{n} of {total}" if total else "–"
 
 
 def main() -> int:
@@ -47,7 +61,7 @@ def main() -> int:
         date, time_, sha = j.stem.split("-", 2)
         runs.append(f"| {date[:4]}-{date[4:6]}-{date[6:]} {time_[:2]}:{time_[2:4]} UTC "
                     f"| [`{sha}`](https://github.com/{args.repo}/commit/{sha}) "
-                    f"| {f'{g:.3f}×' if g else '–'} | {n} | [table](results/{j.stem}.md) · [json](results/{j.name}) |")
+                    f"| {f'{g:.3f}×' if g else '–'} | {n} | {faster(j)} | [table](results/{j.stem}.md) · [json](results/{j.name}) |")
     latest = Path(args.md).read_text().strip()
     readme = "\n".join([
         "# barre benchmark history",
@@ -56,8 +70,8 @@ def main() -> int:
         "barre against Yoga through the same C API on a GitHub-hosted macOS arm64 runner (`bench/run`, docs/BENCH.md).",
         "Shared runners are noisy: compare trends, not single runs.",
         "",
-        "| run | barre commit | geomean barre/Yoga (lower is faster) | workloads | |",
-        "|---|---|--:|--:|---|",
+        "| run | barre commit | geomean barre/Yoga (lower is faster) | workloads | faster than Yoga (excl. `micro/`) | |",
+        "|---|---|--:|--:|--:|---|",
         *runs,
         "",
         "## Latest run",

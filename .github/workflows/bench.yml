@@ -7,6 +7,9 @@ name: Bench
 # README. PRs labelled `bench` run it too and get the table in their job
 # summary, without publishing (and with a read-only token).
 #
+# Both jobs also report (never gate) the faster-than-Yoga count and, in the bench
+# job, a per-workload comparison with the last run on main.
+#
 # bench/run is macOS-only (QoS class, -object_path_lto, -dead_strip), and
 # its numbers come from a shared GitHub-hosted arm64 runner: noisier than a
 # workstation, so read ratios under ~10% as noise.
@@ -59,6 +62,31 @@ jobs:
           # Drop bench/run's title line; the README and the history add their own.
           sed '1{/^# /d;}' bench-raw.md | sed '/./,$!d' > out/bench.md
           cat out/bench.md >> "$GITHUB_STEP_SUMMARY"
+      # Report-only regression check against the last run on main (the newest
+      # results/*.json on the bench-results branch; the publish job below runs
+      # after this, so on a push to main that is the previous run). Compares
+      # barre/yoga ratios per workload and prints the faster-than-Yoga count
+      # (.github/scripts/bench_compare.py, docs/BENCH.md "Regression check and
+      # the faster-than-Yoga metric"). It cannot fail the job: the script exits 0
+      # and the step is continue-on-error. The job summary is the only surface
+      # for now: PRs from forks get a read-only token, so no PR comment yet.
+      - name: compare with the last run on main
+        continue-on-error: true
+        run: |
+          rm -f baseline.json
+          if git fetch -q --depth 1 origin bench-results; then
+            latest=$(git ls-tree --name-only FETCH_HEAD results/ | grep '\.json$' | sort | tail -n 1 || true)
+            if [ -n "$latest" ]; then
+              git show "FETCH_HEAD:$latest" > baseline.json
+              echo "baseline: $latest"
+            fi
+          else
+            echo "no bench-results branch to compare with; reporting the metric only"
+          fi
+          args=(out/bench.json)
+          [ -s baseline.json ] && args+=(baseline.json)
+          .github/scripts/bench_compare.py "${args[@]}" --md out/compare.md --json out/compare.json > /dev/null
+          cat out/compare.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: bench-results
@@ -103,6 +131,10 @@ jobs:
           {
             echo "Benchmarks from the last run on main ($(date -u +%F), barre [\`${GITHUB_SHA::10}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}), GitHub-hosted macOS arm64 runner):"
             echo "time per \`YGNodeCalculateLayout\` through the same C API, Yoga built as React Native builds it; **barre/yoga below 1 means barre is faster**."
+            headline=$(.github/scripts/bench_compare.py out/bench.json --headline 2>/dev/null) || headline=
+            if [ -n "$headline" ]; then
+              echo "**${headline}**: barre/yoga below 0.95 counts as faster, 0.95 to 1.05 as a tie; \`micro/\` (C API call cost) is left out."
+            fi
             echo "Shared runners are noisy (treat differences under ~10% as noise). A **MISMATCH** is a layout that differs from Yoga's,"
             echo "expected where Yoga's compiler contracts float operations into FMA ([yoga#2038](conformance/divergences.md#yoga2038-flexshrink-runaway-from-an-fma-residual), docs/PLAN.md)."
             echo "History: the [bench-results](https://github.com/${GITHUB_REPOSITORY}/tree/bench-results) branch; methodology: [docs/BENCH.md](docs/BENCH.md)."
