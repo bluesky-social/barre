@@ -24,6 +24,10 @@ Commands are fuzz.cpp's (run, show, check, min, snippet). `snippet FILE --run`
 also compiles the snippet against the same engine and runs it.
 
     ./fuzz compare A.json B.json
+    ./fuzz calls-compare A.txt B.txt
+
+`calls` prints each case's measure callbacks per relayout step (no fresh
+layouts); `calls-compare` lines up two engines' outputs (report-only).
 
 compares two `run --json` outputs (e.g. barre and --yoga, or barre and --slots 64)
 by (seed, mode): which failures both have, which only one has, by class. It needs
@@ -219,6 +223,44 @@ def compare(a_path, b_path):
     return 0
 
 
+def load_calls(path):
+    out = {}
+    for line in Path(path).read_text().splitlines():
+        f = line.split()
+        if len(f) == 5:
+            out[(int(f[0]), int(f[1]), f[2])] = (int(f[3]), [int(x) for x in f[4].split(",")])
+    return out
+
+
+def calls_compare(a_path, b_path):
+    """Lines up two `calls` outputs (e.g. barre and --yoga) by (seed, mode, scale)."""
+    a, b = load_calls(a_path), load_calls(b_path)
+    keys = sorted(set(a) & set(b))
+    if not keys:
+        raise FuzzError("calls-compare: no (seed, mode, scale) in both files")
+    more = [k for k in keys if a[k][0] > b[k][0]]
+    fewer = [k for k in keys if a[k][0] < b[k][0]]
+    ta, tb = sum(a[k][0] for k in keys), sum(b[k][0] for k in keys)
+    steps_more = sum(1 for k in keys for x, y in zip(a[k][1], b[k][1]) if x > y)
+    steps_fewer = sum(1 for k in keys for x, y in zip(a[k][1], b[k][1]) if x < y)
+    nsteps = sum(min(len(a[k][1]), len(b[k][1])) for k in keys)
+    print(f"A = {a_path}\nB = {b_path}")
+    print(f"(seed, mode, scale) runs: {len(keys)}; A more callbacks in {len(more)}, fewer in {len(fewer)}, "
+          f"equal in {len(keys) - len(more) - len(fewer)}")
+    print(f"layouts: {nsteps}; A more in {steps_more}, fewer in {steps_fewer}")
+    print(f"callbacks: A {ta}, B {tb} ({(ta / tb - 1) * 100 if tb else float('nan'):+.2f}%)")
+    for scale in sorted({k[2] for k in keys}):
+        ks = [k for k in keys if k[2] == scale]
+        sa, sb = sum(a[k][0] for k in ks), sum(b[k][0] for k in ks)
+        print(f"  scale {scale}: A {sa}, B {sb}; A more in {sum(1 for k in ks if a[k][0] > b[k][0])}, "
+              f"fewer in {sum(1 for k in ks if a[k][0] < b[k][0])} of {len(ks)}")
+    worst = sorted(more, key=lambda k: b[k][0] - a[k][0])[:8]
+    if worst:
+        print("most extra in A (seed/mode/scale: A vs B): "
+              + " ".join(f"{k[0]}/{k[1]}/{k[2]}: {a[k][0]} vs {b[k][0]}" for k in worst))
+    return 0
+
+
 def main(argv):
     opts, rest = parse(argv)
     if not rest:
@@ -228,6 +270,10 @@ def main(argv):
         if len(rest) != 3:
             raise FuzzError("usage: ./fuzz compare A.json B.json")
         return compare(rest[1], rest[2])
+    if rest[0] == "calls-compare":
+        if len(rest) != 3:
+            raise FuzzError("usage: ./fuzz calls-compare A.txt B.txt")
+        return calls_compare(rest[1], rest[2])
     vendor = vendor_dir()
     build_dir = Path(opts["build_dir"] or os.environ.get("BARRE_FUZZ_BUILD_DIR") or ROOT / "build" / "fuzz")
     build_dir = build_dir.resolve()
