@@ -278,7 +278,14 @@ fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
     let same = |a: f32, b: f32| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
     (same(entry.owner_width, owner_width) && same(entry.owner_height, owner_height))
         || !node.style().has_owner_relative_box()
-        || owner_dependent_inputs_resolve_equal(node, direction, entry, owner_width, owner_height)
+        || owner_dependent_inputs_resolve_equal(
+            node,
+            direction,
+            entry.owner_width,
+            entry.owner_height,
+            owner_width,
+            owner_height,
+        )
 }
 
 /// The resolving part of [`owner_dependent_inputs_match`], out of line.
@@ -286,7 +293,8 @@ fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
 fn owner_dependent_inputs_resolve_equal<'a, N: LayoutNode<'a>>(
     node: N,
     direction: Direction,
-    entry: &CachedMeasurement,
+    entry_owner_width: f32,
+    entry_owner_height: f32,
     owner_width: f32,
     owner_height: f32,
 ) -> bool {
@@ -303,7 +311,7 @@ fn owner_dependent_inputs_resolve_equal<'a, N: LayoutNode<'a>>(
             style.resolved_max_dimension(direction, Dimension::Height, oh, ow),
         ]
     };
-    let stored = resolve(entry.owner_width, entry.owner_height);
+    let stored = resolve(entry_owner_width, entry_owner_height);
     let current = resolve(owner_width, owner_height);
     stored
         .iter()
