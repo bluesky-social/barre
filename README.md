@@ -6,6 +6,7 @@ Shared runners are noisy: compare trends, not single runs.
 
 | run | barre commit | geomean barre/Yoga (lower is faster) | workloads | |
 |---|---|--:|--:|---|
+| 2026-10-18 08:08 UTC | [`9122b937ed`](https://github.com/bluesky-social/barre/commit/9122b937ed) | 0.702× | 35 | [table](results/20261018-080803-9122b937ed.md) · [json](results/20261018-080803-9122b937ed.json) |
 | 2026-10-17 20:08 UTC | [`52d96baf8c`](https://github.com/bluesky-social/barre/commit/52d96baf8c) | 0.662× | 35 | [table](results/20261017-200850-52d96baf8c.md) · [json](results/20261017-200850-52d96baf8c.json) |
 | 2026-10-17 18:01 UTC | [`1854783423`](https://github.com/bluesky-social/barre/commit/1854783423) | 0.898× | 35 | [table](results/20261017-180128-1854783423.md) · [json](results/20261017-180128-1854783423.json) |
 | 2026-10-17 17:55 UTC | [`300ee03da5`](https://github.com/bluesky-social/barre/commit/300ee03da5) | 0.897× | 35 | [table](results/20261017-175534-300ee03da5.md) · [json](results/20261017-175534-300ee03da5.json) |
@@ -14,46 +15,46 @@ Shared runners are noisy: compare trends, not single runs.
 
 ## Latest run
 
-- barre: `52d96baf8c99` (cargo --release, CARGO_PROFILE_RELEASE_LTO=fat, CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1), rustc 1.99.1 (58cf8f9c3 2026-10-13)
+- barre: `9122b937ed7e` (cargo --release, CARGO_PROFILE_RELEASE_LTO=fat, CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1), rustc 1.99.1 (58cf8f9c3 2026-10-13)
 - yoga: `vendor/yoga` (pin 52f6d0bd), `-std=c++20 -gline-tables-only -O2 -DNDEBUG -flto=thin -fno-omit-frame-pointer -fexceptions -frtti -ffunction-sections -fdata-sections -fPIC`, Apple clang version 21.0.0 (clang-2100.1.1.101)
-- Apple M1 (Virtual), 26.6.2, load avg at end 12.9/17.5/10.7
+- Apple M1 (Virtual), 26.6.2, load avg at end 14.3/29.6/18.3
 - 5 interleaved rounds × 300 ms per workload per engine (+100 ms warmup); times are ns per YGNodeCalculateLayout (or per op for `micro/`, per build+layout+free for `yoga/*` blocks)
-- geometric mean barre/yoga over 35 workloads: **0.66×**
+- geometric mean barre/yoga over 35 workloads: **0.70×**
 
 | workload | yoga median (p10–p90) | barre median (p10–p90) | barre/yoga | measure calls/layout (y, b) | new-layout nodes (y, b) | check |
 |---|---|---|---|---|---|---|
-| `yoga/stack_with_flex` | 4.12 µs (4.06 µs–5.25 µs) | 2.57 µs (2.53 µs–4.18 µs) | **0.62×** | 0 | - | ok |
-| `yoga/align_stretch_undefined_axis` | 3.77 µs (3.72 µs–7.49 µs) | 2.52 µs (2.48 µs–4.57 µs) | **0.67×** | 10 | - | ok |
-| `yoga/nested_flex` | 73.5 µs (72.3 µs–113 µs) | 42.1 µs (40.5 µs–56 µs) | **0.57×** | 100 | - | ok |
-| `yoga/huge_nested` | 4.59 ms (4.02 ms–6.51 ms) | 4.92 ms (3.56 ms–8 ms) | **1.07×** | 0 | - | ok |
-| `yoga/huge_nested.layout_only` | 3.48 ms (2.97 ms–5.43 ms) | 2.53 ms (1.82 ms–3.39 ms) | **0.73×** | 0 | - | ok |
-| `capture/feed-android` | 978 µs (930 µs–1.62 ms) | 452 µs (428 µs–654 µs) | **0.46×** | 57 | - | ok |
-| `capture/feed-android.clean` | 32 ns (32 ns–46 ns) | 20 ns (19 ns–59 ns) | **0.61×** | 0 | - | ok |
-| `capture/profile-ios` | 188 µs (175 µs–270 µs) | 83.1 µs (79.7 µs–122 µs) | **0.44×** | 13 | - | ok |
-| `capture/profile-ios.clean` | 31 ns (30 ns–41 ns) | 20 ns (19 ns–24 ns) | **0.63×** | 0 | - | ok |
-| `capture/rendering-sample-mac` | 77.1 µs (72.8 µs–105 µs) | 36 µs (34.2 µs–57.2 µs) | **0.47×** | 24 | - | ok |
-| `capture/rendering-sample-mac.clean` | 31 ns (30 ns–42 ns) | 20 ns (19 ns–59 ns) | **0.65×** | 0 | - | ok |
-| `capture/chat-mac` | 5.37 ms (5.05 ms–9.11 ms) | 2.72 ms (2.49 ms–5.45 ms) | **0.51×** | 162 | - | ok |
-| `capture/chat-mac.clean` | 32 ns (30 ns–104 ns) | 19 ns (19 ns–58 ns) | **0.61×** | 0 | - | ok |
-| `rn/feed50/fresh` | 2.35 ms (2.26 ms–4.17 ms) | 1.07 ms (988 µs–1.5 ms) | **0.45×** | 548 | 1451 | ok |
-| `rn/feed50/clean` | 31 ns (30 ns–38 ns) | 20 ns (19 ns–29 ns) | **0.64×** | 0 | 1 | ok |
-| `rn/feed50/text_change` | 53.2 µs (50.5 µs–65.9 µs) | 29.3 µs (28.6 µs–41.2 µs) | **0.55×** | 1 | 63 | ok |
-| `rn/feed50/text_same_size` | 51.1 µs (49.6 µs–70.5 µs) | 15.7 µs (15.2 µs–21.8 µs) | **0.31×** | 1 | 62 | ok |
-| `rn/feed50/rotate` | 393 µs (368 µs–536 µs) | 349 µs (321 µs–522 µs) | **0.89×** | 0 | 1101 | ok |
-| `rn/feed50/resize` | 2.29 ms (2.07 ms–2.96 ms) | 994 µs (947 µs–1.39 ms) | **0.43×** | 135/136/139, 144/148 | 1077/1078/1080 | **MISMATCH**: 27 nodes differ, max Δ 0.333344 at /0/0/6/0/0/1/0/2; measure calls differ [148, 136, 139, 135] vs [148, 148, 148, 144] |
-| `rn/feed50/insert_remove` | 42.5 µs (40.2 µs–52.9 µs) | 23.5 µs (22.8 µs–29.8 µs) | **0.55×** | 0 | 52/54 | ok |
-| `rn/deep5/fresh` | 18.7 µs (18.4 µs–23.6 µs) | 8.33 µs (8.17 µs–10.5 µs) | **0.45×** | 17 | 12 | ok |
-| `rn/deep10/fresh` | 248 µs (232 µs–323 µs) | 101 µs (98 µs–125 µs) | **0.41×** | 160 | 22 | **MISMATCH**: 1 nodes differ, max Δ 0.333328 at /0/1/1/1/1/0 |
-| `rn/deep15/fresh` | 3.93 ms (3.69 ms–5.23 ms) | 1.54 ms (1.42 ms–2.07 ms) | **0.39×** | 4356, 4382 | 32 | ok; measure calls differ [4356, 4356, 4356, 4356] vs [4382, 4382, 4382, 4382] |
-| `rn/deep20/fresh` | 52.9 ms (46.9 ms–79.1 ms) | 18.9 ms (17.7 ms–28.1 ms) | **0.36×** | 66064, 66937 | 42 | **MISMATCH**: 6 nodes differ, max Δ 0.333374 at /0/1/1/1/1/1/1/1/1/1/1/1/0; measure calls differ [66064, 66064, 66064, 66064] vs [66937, 66937, 66937, 66937] |
-| `rn/deep20/clean` | 31 ns (30 ns–38 ns) | 20 ns (19 ns–25 ns) | **0.63×** | 0 | 1 | **MISMATCH**: 6 nodes differ, max Δ 0.333374 at /0/1/1/1/1/1/1/1/1/1/1/1/0 |
-| `rn/wide_column1000/fresh` | 1.36 ms (1.29 ms–1.8 ms) | 786 µs (650 µs–1.02 ms) | **0.58×** | 1000 | 4003 | ok |
-| `rn/wide_row200/fresh` | 78.2 µs (74.8 µs–102 µs) | 36.2 µs (35.7 µs–45.1 µs) | **0.46×** | 400 | 201 | ok |
-| `rn/wrap_grid300/fresh` | 694 µs (648 µs–1.17 ms) | 397 µs (368 µs–743 µs) | **0.57×** | 300 | 1203 | ok |
-| `rn/absolute100/fresh` | 413 µs (366 µs–703 µs) | 197 µs (180 µs–314 µs) | **0.48×** | 200 | 703 | ok |
-| `micro/node_new_free` | 62 ns (60 ns–146 ns) | 90 ns (87 ns–152 ns) | **1.46×** | 0 | - | n/a |
-| `micro/style_set_x20` | 68 ns (65 ns–92 ns) | 305 ns (298 ns–425 ns) | **4.49×** | 0 | - | n/a |
-| `micro/style_get_x20` | 12 ns (11 ns–33 ns) | 18 ns (17 ns–44 ns) | **1.51×** | 0 | - | n/a |
-| `micro/insert_remove_child` | 23 ns (22 ns–38 ns) | 34 ns (34 ns–101 ns) | **1.52×** | 0 | - | n/a |
-| `micro/build_feed50_tree` | 183 µs (176 µs–379 µs) | 265 µs (249 µs–476 µs) | **1.45×** | 0 | - | ok |
-| `micro/layout_get_feed50` | 6.91 µs (6.5 µs–14.5 µs) | 10.4 µs (9.92 µs–24.6 µs) | **1.51×** | 0 | - | n/a |
+| `yoga/stack_with_flex` | 4.32 µs (4.04 µs–10.9 µs) | 2.67 µs (2.56 µs–6.94 µs) | **0.62×** | 0 | - | ok |
+| `yoga/align_stretch_undefined_axis` | 3.85 µs (3.68 µs–9.84 µs) | 2.6 µs (2.51 µs–6.84 µs) | **0.68×** | 10 | - | ok |
+| `yoga/nested_flex` | 79.9 µs (72.4 µs–194 µs) | 46.7 µs (42.8 µs–117 µs) | **0.58×** | 100 | - | ok |
+| `yoga/huge_nested` | 5.53 ms (4.37 ms–9.72 ms) | 6.54 ms (3.54 ms–10.7 ms) | **1.18×** | 0 | - | ok |
+| `yoga/huge_nested.layout_only` | 3.92 ms (3.17 ms–6.34 ms) | 2.84 ms (2.47 ms–4.64 ms) | **0.72×** | 0 | - | ok |
+| `capture/feed-android` | 1.1 ms (975 µs–2.08 ms) | 514 µs (460 µs–1.06 ms) | **0.47×** | 57 | - | ok |
+| `capture/feed-android.clean` | 33 ns (32 ns–100 ns) | 24 ns (24 ns–77 ns) | **0.74×** | 0 | - | ok |
+| `capture/profile-ios` | 201 µs (178 µs–471 µs) | 90.7 µs (82 µs–233 µs) | **0.45×** | 13 | - | ok |
+| `capture/profile-ios.clean` | 33 ns (31 ns–100 ns) | 24 ns (23 ns–78 ns) | **0.74×** | 0 | - | ok |
+| `capture/rendering-sample-mac` | 84.6 µs (75.5 µs–178 µs) | 40.4 µs (36.2 µs–107 µs) | **0.48×** | 24 | - | ok |
+| `capture/rendering-sample-mac.clean` | 31 ns (30 ns–66 ns) | 25 ns (24 ns–78 ns) | **0.79×** | 0 | - | ok |
+| `capture/chat-mac` | 5.8 ms (5.18 ms–8.86 ms) | 3.27 ms (2.66 ms–6.02 ms) | **0.56×** | 162 | - | ok |
+| `capture/chat-mac.clean` | 32 ns (30 ns–51 ns) | 24 ns (24 ns–63 ns) | **0.76×** | 0 | - | ok |
+| `rn/feed50/fresh` | 2.7 ms (2.26 ms–5.25 ms) | 1.17 ms (1.03 ms–2.42 ms) | **0.43×** | 548 | 1451 | ok |
+| `rn/feed50/clean` | 32 ns (31 ns–102 ns) | 26 ns (24 ns–79 ns) | **0.79×** | 0 | 1 | ok |
+| `rn/feed50/text_change` | 55.5 µs (52.6 µs–147 µs) | 32.2 µs (30.2 µs–57.5 µs) | **0.58×** | 1 | 63 | ok |
+| `rn/feed50/text_same_size` | 52.6 µs (49.8 µs–83.5 µs) | 19 µs (16.5 µs–49.6 µs) | **0.36×** | 1 | 62 | ok |
+| `rn/feed50/rotate` | 408 µs (375 µs–569 µs) | 407 µs (358 µs–680 µs) | **1.00×** | 0 | 1101 | ok |
+| `rn/feed50/resize` | 2.4 ms (2.12 ms–4.13 ms) | 1.16 ms (978 µs–1.91 ms) | **0.48×** | 135/136/139, 144/148 | 1077/1078/1080 | **MISMATCH**: 27 nodes differ, max Δ 0.333344 at /0/0/6/0/0/1/0/2; measure calls differ [148, 136, 139, 135] vs [148, 148, 148, 144] |
+| `rn/feed50/insert_remove` | 45.3 µs (40.8 µs–116 µs) | 26.2 µs (24.5 µs–75 µs) | **0.58×** | 0 | 52/54 | ok |
+| `rn/deep5/fresh` | 19.2 µs (18.5 µs–47.5 µs) | 8.67 µs (8.42 µs–11 µs) | **0.45×** | 17 | 12 | ok |
+| `rn/deep10/fresh` | 251 µs (233 µs–378 µs) | 106 µs (100 µs–131 µs) | **0.42×** | 160 | 22 | **MISMATCH**: 1 nodes differ, max Δ 0.333328 at /0/1/1/1/1/0 |
+| `rn/deep15/fresh` | 4.17 ms (3.87 ms–5.49 ms) | 1.56 ms (1.46 ms–2.07 ms) | **0.37×** | 4356, 4382 | 32 | ok; measure calls differ [4356, 4356, 4356, 4356] vs [4382, 4382, 4382, 4382] |
+| `rn/deep20/fresh` | 50.6 ms (47.8 ms–77.4 ms) | 19.4 ms (17.5 ms–27 ms) | **0.38×** | 66064, 66937 | 42 | **MISMATCH**: 6 nodes differ, max Δ 0.333374 at /0/1/1/1/1/1/1/1/1/1/1/1/0; measure calls differ [66064, 66064, 66064, 66064] vs [66937, 66937, 66937, 66937] |
+| `rn/deep20/clean` | 32 ns (30 ns–40 ns) | 24 ns (23 ns–78 ns) | **0.78×** | 0 | 1 | **MISMATCH**: 6 nodes differ, max Δ 0.333374 at /0/1/1/1/1/1/1/1/1/1/1/1/0 |
+| `rn/wide_column1000/fresh` | 1.52 ms (1.3 ms–2.27 ms) | 794 µs (664 µs–1.27 ms) | **0.52×** | 1000 | 4003 | ok |
+| `rn/wide_row200/fresh` | 83.2 µs (75.5 µs–164 µs) | 38.4 µs (36 µs–83.6 µs) | **0.46×** | 400 | 201 | ok |
+| `rn/wrap_grid300/fresh` | 749 µs (670 µs–1.3 ms) | 413 µs (375 µs–697 µs) | **0.55×** | 300 | 1203 | ok |
+| `rn/absolute100/fresh` | 421 µs (373 µs–639 µs) | 216 µs (196 µs–408 µs) | **0.51×** | 200 | 703 | ok |
+| `micro/node_new_free` | 62 ns (59 ns–147 ns) | 91 ns (88 ns–210 ns) | **1.47×** | 0 | - | n/a |
+| `micro/style_set_x20` | 69 ns (66 ns–222 ns) | 328 ns (298 ns–878 ns) | **4.73×** | 0 | - | n/a |
+| `micro/style_get_x20` | 12 ns (11 ns–33 ns) | 19 ns (17 ns–51 ns) | **1.55×** | 0 | - | n/a |
+| `micro/insert_remove_child` | 24 ns (22 ns–63 ns) | 37 ns (34 ns–102 ns) | **1.54×** | 0 | - | n/a |
+| `micro/build_feed50_tree` | 197 µs (177 µs–468 µs) | 293 µs (256 µs–683 µs) | **1.49×** | 0 | - | ok |
+| `micro/layout_get_feed50` | 6.8 µs (6.49 µs–14.6 µs) | 10.5 µs (10 µs–24 µs) | **1.54×** | 0 | - | n/a |
