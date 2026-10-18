@@ -3290,6 +3290,292 @@ fn has_retainable_flex_basis_child<'a, N: LayoutNode<'a>>(node: N) -> bool {
     })
 }
 
+/// barre-only (yoga#2019), no Yoga counterpart: the bookkeeping of
+/// [`calculate_layout_internal`] for a container call answered from a cache
+/// entry stored in an earlier layout. Out of line (perf) so the common hit
+/// path stays small.
+#[inline(never)]
+fn earlier_layout_container_hit<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_width: f32,
+    available_height: f32,
+    owner_direction: Direction,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    owner_width: f32,
+    perform_layout: bool,
+    generation_count: u32,
+    cached: CachedResult,
+    entry: CachedMeasurement,
+    starts_anchor: bool,
+    this_call: FlexBasisAnchor,
+    anchor: FlexBasisAnchor,
+) {
+    let layout = node.layout();
+    // barre-only (yoga#2019): in a fresh layout this call would have
+    // run and rewritten the children's bases; it was answered from an
+    // earlier layout, so record it for replay before the next real
+    // run.
+    if starts_anchor {
+        layout.flex_basis_anchor.set(FlexBasisAnchor {
+            replay_pending: true,
+            ..this_call
+        });
+    } else if let Some(single_flex_child) = single_flex_child_of_call(
+        node,
+        available_width,
+        available_height,
+        width_sizing_mode,
+        height_sizing_mode,
+        owner_direction,
+        owner_width,
+        perform_layout,
+    ) {
+        // barre-only (yoga#2019): in a fresh layout this call ran and
+        // its `singleFlexChild` shortcut gave the single flex child a
+        // basis of 0. Make that write now, or right after the pending
+        // replay of the anchor if there is one (a fresh layout ran the
+        // anchor first). Found by the fuzzer,
+        // `barre-only-basis-mode0`.
+        let pending = layout.flex_basis_anchor.get();
+        if pending.generation == generation_count && pending.replay_pending {
+            layout.flex_basis_anchor.set(FlexBasisAnchor {
+                single_flex_child_pending: true,
+                ..pending
+            });
+        } else {
+            write_zero_flex_basis(single_flex_child, generation_count);
+        }
+    }
+    // barre-only (yoga#2019): a fresh layout ran this call and stored
+    // this entry in this layout, with the anchor in effect now, so
+    // restamp it. Otherwise the next call in this layout that hits it
+    // is taken for an earlier layout's hit again, which a fresh layout
+    // does not have: it would record (and replay) the anchor a second
+    // time, after runs that rewrote the children's bases since, or be
+    // refused against an anchor that has moved on (found by the
+    // fuzzer, `barre-only-basis-mode2`).
+    let restamped = CachedMeasurement {
+        generation: generation_count,
+        anchor_available_width: anchor.available_width,
+        anchor_available_height: anchor.available_height,
+        anchor_width_sizing_mode: anchor.width_sizing_mode,
+        anchor_height_sizing_mode: anchor.height_sizing_mode,
+        ..entry
+    };
+    match cached {
+        CachedResult::Layout => layout.cached_layout.set(restamped),
+        CachedResult::Measurement(i) => layout.cached_measurements[i].set(restamped),
+    }
+}
+
+/// The part of [`calculate_layout_internal`] that runs
+/// [`calculate_layout_impl`] (after a pending flex-basis anchor replay,
+/// barre-only) and stores the result in the cache. Out of line (perf) so
+/// the cache-hit path stays small; no Yoga counterpart as a function.
+#[inline(never)]
+fn run_and_store<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_width: f32,
+    available_height: f32,
+    owner_direction: Direction,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    owner_width: f32,
+    owner_height: f32,
+    perform_layout: bool,
+    reason: LayoutPassReason,
+    layout_marker_data: &mut LayoutData,
+    depth: u32,
+    generation_count: u32,
+    has_children: bool,
+    starts_anchor: bool,
+    this_call: FlexBasisAnchor,
+    anchor: FlexBasisAnchor,
+    rejected: Option<CachedResult>,
+    no_cached_result: bool,
+) {
+    let layout = node.layout();
+    if has_children {
+        // barre-only (yoga#2019): replay, measure-only, the anchor call
+        // the cache skipped, so the children get exactly the bases (and
+        // their subtrees the calls) a fresh layout gave them before this
+        // call. No cache lookup or store, no generation or `hasNewLayout`
+        // update; the real run below overwrites what this sets on `node`.
+        let pending = layout.flex_basis_anchor.get();
+        if pending.generation == generation_count && pending.replay_pending {
+            layout.flex_basis_anchor.set(FlexBasisAnchor {
+                replay_pending: false,
+                single_flex_child_pending: false,
+                ..pending
+            });
+            crate::stat!(|s| {
+                fn subtree_retainable<'a, N: LayoutNode<'a>>(n: N) -> bool {
+                    !n.has_measure_func()
+                        && (has_retainable_flex_basis_child(n)
+                            || n.layout_children().any(subtree_retainable))
+                }
+                if subtree_retainable(node) {
+                    s.replays_retainable += 1;
+                }
+                if has_retainable_flex_basis_child(node) {
+                    s.replays_direct_retainable += 1;
+                }
+                s.replays += 1;
+                s.nodes
+                    .entry(crate::stats::node_id(layout))
+                    .or_default()
+                    .replays += 1;
+            });
+            calculate_layout_impl(
+                node,
+                pending.available_width,
+                pending.available_height,
+                pending.owner_direction,
+                pending.width_sizing_mode,
+                pending.height_sizing_mode,
+                pending.owner_width,
+                pending.owner_height,
+                false, // perform_layout
+                pending.reason,
+                layout_marker_data,
+                depth,
+                generation_count,
+            );
+            if pending.single_flex_child_pending {
+                write_single_flex_child_basis(node, generation_count);
+            }
+        }
+        if starts_anchor {
+            layout.flex_basis_anchor.set(this_call);
+        }
+    }
+
+    calculate_layout_impl(
+        node,
+        available_width,
+        available_height,
+        owner_direction,
+        width_sizing_mode,
+        height_sizing_mode,
+        owner_width,
+        owner_height,
+        perform_layout,
+        reason,
+        layout_marker_data,
+        depth,
+        generation_count,
+    );
+
+    layout.last_owner_direction.set(owner_direction);
+    layout.config_version.set(node.config().version());
+
+    crate::stat!(|s| {
+        let (w, h) = (
+            layout.measured_dimension(Dimension::Width),
+            layout.measured_dimension(Dimension::Height),
+        );
+        let entries = layout.cached_measurements
+            [..layout.next_cached_measurements_index.get() as usize]
+            .iter()
+            .map(|e| e.get())
+            .chain(std::iter::once(layout.cached_layout.get()));
+        let mut seen = false;
+        let mut same_gen = false;
+        let mut class: Option<String> = None;
+        let rel = |a: f32, b: f32| {
+            if a.is_nan() && b.is_nan() {
+                "nan"
+            } else if a.is_nan() || b.is_nan() {
+                "nan?"
+            } else if a == b {
+                "="
+            } else if a < b {
+                "<"
+            } else {
+                ">"
+            }
+        };
+        for e in entries {
+            if e.computed_width.to_bits() == w.to_bits()
+                && e.computed_height.to_bits() == h.to_bits()
+            {
+                seen = true;
+                if e.generation == generation_count && !same_gen {
+                    same_gen = true;
+                    class = Some(format!(
+                        "{} leaf={} entry({:?},{:?}) -> call({:?},{:?}) avail w{} h{} | w fits={} h fits={}",
+                        if perform_layout { "layout " } else { "measure" },
+                        node.has_measure_func(),
+                        e.width_sizing_mode,
+                        e.height_sizing_mode,
+                        width_sizing_mode,
+                        height_sizing_mode,
+                        rel(available_width, e.available_width),
+                        rel(available_height, e.available_height),
+                        w < available_width,
+                        h < available_height,
+                    ));
+                }
+            }
+        }
+        if let Some(c) = class {
+            *s.redundant.entry(c).or_default() += 1;
+        }
+        if seen && !perform_layout {
+            s.measure_run_result_seen += 1;
+        }
+        if same_gen {
+            s.run_equal_to_existing += 1;
+        }
+    });
+
+    let new_entry = CachedMeasurement {
+        available_width,
+        available_height,
+        computed_width: layout.measured_dimension(Dimension::Width),
+        computed_height: layout.measured_dimension(Dimension::Height),
+        owner_width,
+        owner_height,
+        generation: generation_count,
+        anchor_available_width: anchor.available_width,
+        anchor_available_height: anchor.available_height,
+        width_sizing_mode,
+        height_sizing_mode,
+        anchor_width_sizing_mode: anchor.width_sizing_mode,
+        anchor_height_sizing_mode: anchor.height_sizing_mode,
+    };
+
+    if let Some(rejected) = rejected {
+        // barre-only (yoga#2019): overwrite the entry D5 rejected in
+        // place, keeping cache occupancy what Yoga's would be after a hit.
+        match rejected {
+            CachedResult::Layout => layout.cached_layout.set(new_entry),
+            CachedResult::Measurement(i) => layout.cached_measurements[i].set(new_entry),
+        }
+    } else if no_cached_result {
+        layout_marker_data.max_measure_cache = layout_marker_data
+            .max_measure_cache
+            .max(layout.next_cached_measurements_index.get() + 1);
+
+        if layout.next_cached_measurements_index.get() as usize == MAX_CACHED_MEASUREMENTS {
+            layout.next_cached_measurements_index.set(0);
+        }
+
+        let new_cache_entry = if perform_layout {
+            // Use the single layout cache entry.
+            &layout.cached_layout
+        } else {
+            // Allocate a new measurement cache entry.
+            let index = layout.next_cached_measurements_index.get();
+            layout.next_cached_measurements_index.set(index + 1);
+            &layout.cached_measurements[index as usize]
+        };
+
+        new_cache_entry.set(new_entry);
+    }
+}
+
 /// `calculateLayoutInternal`: a wrapper around [`calculate_layout_impl`]
 /// that determines whether the layout request is redundant and can be
 /// skipped. Returns whether layout was performed (false if skipped).
@@ -3460,61 +3746,22 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     if let (false, Some(cached)) = (need_to_visit_node, cached_results) {
         let entry = cached_entry(layout, cached);
         if has_children && entry.generation != generation_count {
-            // barre-only (yoga#2019): in a fresh layout this call would have
-            // run and rewritten the children's bases; it was answered from an
-            // earlier layout, so record it for replay before the next real
-            // run.
-            if starts_anchor {
-                layout.flex_basis_anchor.set(FlexBasisAnchor {
-                    replay_pending: true,
-                    ..this_call
-                });
-            } else if let Some(single_flex_child) = single_flex_child_of_call(
+            earlier_layout_container_hit(
                 node,
                 available_width,
                 available_height,
+                owner_direction,
                 width_sizing_mode,
                 height_sizing_mode,
-                owner_direction,
                 owner_width,
                 perform_layout,
-            ) {
-                // barre-only (yoga#2019): in a fresh layout this call ran and
-                // its `singleFlexChild` shortcut gave the single flex child a
-                // basis of 0. Make that write now, or right after the pending
-                // replay of the anchor if there is one (a fresh layout ran the
-                // anchor first). Found by the fuzzer,
-                // `barre-only-basis-mode0`.
-                let pending = layout.flex_basis_anchor.get();
-                if pending.generation == generation_count && pending.replay_pending {
-                    layout.flex_basis_anchor.set(FlexBasisAnchor {
-                        single_flex_child_pending: true,
-                        ..pending
-                    });
-                } else {
-                    write_zero_flex_basis(single_flex_child, generation_count);
-                }
-            }
-            // barre-only (yoga#2019): a fresh layout ran this call and stored
-            // this entry in this layout, with the anchor in effect now, so
-            // restamp it. Otherwise the next call in this layout that hits it
-            // is taken for an earlier layout's hit again, which a fresh layout
-            // does not have: it would record (and replay) the anchor a second
-            // time, after runs that rewrote the children's bases since, or be
-            // refused against an anchor that has moved on (found by the
-            // fuzzer, `barre-only-basis-mode2`).
-            let restamped = CachedMeasurement {
-                generation: generation_count,
-                anchor_available_width: anchor.available_width,
-                anchor_available_height: anchor.available_height,
-                anchor_width_sizing_mode: anchor.width_sizing_mode,
-                anchor_height_sizing_mode: anchor.height_sizing_mode,
-                ..entry
-            };
-            match cached {
-                CachedResult::Layout => layout.cached_layout.set(restamped),
-                CachedResult::Measurement(i) => layout.cached_measurements[i].set(restamped),
-            }
+                generation_count,
+                cached,
+                entry,
+                starts_anchor,
+                this_call,
+                anchor,
+            );
         }
         layout.set_measured_dimension(Dimension::Width, entry.computed_width);
         layout.set_measured_dimension(Dimension::Height, entry.computed_height);
@@ -3525,62 +3772,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             layout_marker_data.cached_measures += 1;
         }
     } else {
-        if has_children {
-            // barre-only (yoga#2019): replay, measure-only, the anchor call
-            // the cache skipped, so the children get exactly the bases (and
-            // their subtrees the calls) a fresh layout gave them before this
-            // call. No cache lookup or store, no generation or `hasNewLayout`
-            // update; the real run below overwrites what this sets on `node`.
-            let pending = layout.flex_basis_anchor.get();
-            if pending.generation == generation_count && pending.replay_pending {
-                layout.flex_basis_anchor.set(FlexBasisAnchor {
-                    replay_pending: false,
-                    single_flex_child_pending: false,
-                    ..pending
-                });
-                crate::stat!(|s| {
-                    fn subtree_retainable<'a, N: LayoutNode<'a>>(n: N) -> bool {
-                        !n.has_measure_func()
-                            && (has_retainable_flex_basis_child(n)
-                                || n.layout_children().any(subtree_retainable))
-                    }
-                    if subtree_retainable(node) {
-                        s.replays_retainable += 1;
-                    }
-                    if has_retainable_flex_basis_child(node) {
-                        s.replays_direct_retainable += 1;
-                    }
-                    s.replays += 1;
-                    s.nodes
-                        .entry(crate::stats::node_id(layout))
-                        .or_default()
-                        .replays += 1;
-                });
-                calculate_layout_impl(
-                    node,
-                    pending.available_width,
-                    pending.available_height,
-                    pending.owner_direction,
-                    pending.width_sizing_mode,
-                    pending.height_sizing_mode,
-                    pending.owner_width,
-                    pending.owner_height,
-                    false, // perform_layout
-                    pending.reason,
-                    layout_marker_data,
-                    depth,
-                    generation_count,
-                );
-                if pending.single_flex_child_pending {
-                    write_single_flex_child_basis(node, generation_count);
-                }
-            }
-            if starts_anchor {
-                layout.flex_basis_anchor.set(this_call);
-            }
-        }
-
-        calculate_layout_impl(
+        run_and_store(
             node,
             available_width,
             available_height,
@@ -3594,115 +3786,13 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             layout_marker_data,
             depth,
             generation_count,
+            has_children,
+            starts_anchor,
+            this_call,
+            anchor,
+            rejected,
+            cached_results.is_none(),
         );
-
-        layout.last_owner_direction.set(owner_direction);
-        layout.config_version.set(node.config().version());
-
-        crate::stat!(|s| {
-            let (w, h) = (
-                layout.measured_dimension(Dimension::Width),
-                layout.measured_dimension(Dimension::Height),
-            );
-            let entries = layout.cached_measurements
-                [..layout.next_cached_measurements_index.get() as usize]
-                .iter()
-                .map(|e| e.get())
-                .chain(std::iter::once(layout.cached_layout.get()));
-            let mut seen = false;
-            let mut same_gen = false;
-            let mut class: Option<String> = None;
-            let rel = |a: f32, b: f32| {
-                if a.is_nan() && b.is_nan() {
-                    "nan"
-                } else if a.is_nan() || b.is_nan() {
-                    "nan?"
-                } else if a == b {
-                    "="
-                } else if a < b {
-                    "<"
-                } else {
-                    ">"
-                }
-            };
-            for e in entries {
-                if e.computed_width.to_bits() == w.to_bits()
-                    && e.computed_height.to_bits() == h.to_bits()
-                {
-                    seen = true;
-                    if e.generation == generation_count && !same_gen {
-                        same_gen = true;
-                        class = Some(format!(
-                            "{} leaf={} entry({:?},{:?}) -> call({:?},{:?}) avail w{} h{} | w fits={} h fits={}",
-                            if perform_layout { "layout " } else { "measure" },
-                            node.has_measure_func(),
-                            e.width_sizing_mode,
-                            e.height_sizing_mode,
-                            width_sizing_mode,
-                            height_sizing_mode,
-                            rel(available_width, e.available_width),
-                            rel(available_height, e.available_height),
-                            w < available_width,
-                            h < available_height,
-                        ));
-                    }
-                }
-            }
-            if let Some(c) = class {
-                *s.redundant.entry(c).or_default() += 1;
-            }
-            if seen && !perform_layout {
-                s.measure_run_result_seen += 1;
-            }
-            if same_gen {
-                s.run_equal_to_existing += 1;
-            }
-        });
-
-        let new_entry = CachedMeasurement {
-            available_width,
-            available_height,
-            computed_width: layout.measured_dimension(Dimension::Width),
-            computed_height: layout.measured_dimension(Dimension::Height),
-            owner_width,
-            owner_height,
-            generation: generation_count,
-            anchor_available_width: anchor.available_width,
-            anchor_available_height: anchor.available_height,
-            width_sizing_mode,
-            height_sizing_mode,
-            anchor_width_sizing_mode: anchor.width_sizing_mode,
-            anchor_height_sizing_mode: anchor.height_sizing_mode,
-        };
-
-        if let Some(rejected) = rejected {
-            // barre-only (yoga#2019): overwrite the entry D5 rejected in
-            // place, keeping cache occupancy what Yoga's would be after a hit.
-            match rejected {
-                CachedResult::Layout => layout.cached_layout.set(new_entry),
-                CachedResult::Measurement(i) => layout.cached_measurements[i].set(new_entry),
-            }
-        } else if cached_results.is_none() {
-            layout_marker_data.max_measure_cache = layout_marker_data
-                .max_measure_cache
-                .max(layout.next_cached_measurements_index.get() + 1);
-
-            if layout.next_cached_measurements_index.get() as usize == MAX_CACHED_MEASUREMENTS {
-                layout.next_cached_measurements_index.set(0);
-            }
-
-            let new_cache_entry = if perform_layout {
-                // Use the single layout cache entry.
-                &layout.cached_layout
-            } else {
-                // Allocate a new measurement cache entry.
-                let index = layout.next_cached_measurements_index.get();
-                layout.next_cached_measurements_index.set(index + 1);
-                &layout.cached_measurements[index as usize]
-            };
-
-            new_cache_entry.set(new_entry);
-        }
     }
 
     if perform_layout {
