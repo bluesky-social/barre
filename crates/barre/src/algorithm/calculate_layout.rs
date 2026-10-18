@@ -3553,18 +3553,17 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
             // time, after runs that rewrote the children's bases since, or be
             // refused against an anchor that has moved on (found by the
             // fuzzer, `barre-only-basis-mode2`).
-            let restamped = CachedMeasurement {
-                generation: generation_count,
-                anchor_available_width: anchor.available_width,
-                anchor_available_height: anchor.available_height,
-                anchor_width_sizing_mode: anchor.width_sizing_mode,
-                anchor_height_sizing_mode: anchor.height_sizing_mode,
-                ..entry
-            };
-            match cached {
-                CachedResult::Layout => layout.cached_layout.set(restamped),
-                CachedResult::Measurement(i) => layout.cached_measurements[i].set(restamped),
-            }
+            CachedMeasurement::restamp(
+                match cached {
+                    CachedResult::Layout => &layout.cached_layout,
+                    CachedResult::Measurement(i) => &layout.cached_measurements[i],
+                },
+                generation_count,
+                anchor.available_width,
+                anchor.available_height,
+                anchor.width_sizing_mode,
+                anchor.height_sizing_mode,
+            );
         }
         layout.set_measured_dimension(Dimension::Width, entry.computed_width);
         layout.set_measured_dimension(Dimension::Height, entry.computed_height);
