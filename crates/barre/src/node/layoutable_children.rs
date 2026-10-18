@@ -73,14 +73,8 @@ impl<'a, N: LayoutNode<'a>> LayoutableChildren<'a, N> {
             // pop and restore the latest backtrack entry
             match self.backtrack.pop() {
                 // If there are no nodes to backtrack to, the last node has
-                // been visited. (The end position, set field by field: the
-                // backtrack stack is already empty, so this keeps its
-                // allocation, if any, instead of dropping it on the hot
-                // path.)
-                None => {
-                    self.node = None;
-                    self.child_index = 0;
-                }
+                // been visited.
+                None => *self = LayoutableChildren::end(),
                 Some((back_node, back_index)) => {
                     self.node = Some(back_node);
                     self.child_index = back_index;
