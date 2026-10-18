@@ -68,6 +68,19 @@ whatever it picks up.
 2. **Perf toward 0.5× Yoga's time** (`docs/BENCH.md` has the ranked ideas and
    calls-per-node findings):
    - The rest of the rotate regression (T-0006's replays).
+   - **Claw back the cost of the barre-only relayout fixes** (stack layer
+     "fix-barre-only-relayout"). Measured 2026-10-18 with `bench/run --rev
+     REV rn/` (REV = the stack top before vs after; two runs each, within
+     about 1% of each other): rn/ geomean 0.52× → 0.55×, and on `rn/feed50`
+     `clean` 12 → 16 ns, `text_same_size` 10.6 → 11.8 µs (+11%), `rotate`
+     233 → 247 µs (0.91× → 0.97×), `text_change` +7%, `insert_remove` +6%;
+     fresh layouts +1–3%. Per commit, no single culprit: 0a99eec costs
+     nothing, then restamp on hit (074d3df) +2 ns on `clean` and about +5 µs
+     on `rotate`, baseline invalidation (2135442) about +4 µs, the
+     single-flex-child write (1fb7b09) about +7 µs, the fixed-size check
+     (b5fab9e) +2 ns on `clean`. It was accepted because correctness comes
+     first. Look for the same checks done on colder paths, or merged into
+     the existing lookups.
    - Fewer edge lookups.
    - A hot/cold split of node data, and a compact `Style`, which also
      shrinks the RN blob.
