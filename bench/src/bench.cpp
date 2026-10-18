@@ -9,6 +9,7 @@
 // measure-func call counts). bench/run drives it.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -843,12 +844,15 @@ struct FeedRelayout : Workload {
 // an auto-height column, the T-0006 shape), three `flex: 1` texts sharing a
 // row, text in a card with sub-pixel padding, and a 1/3-pt left padding, so
 // text leaves get available widths on the 1/3-pt grid and off it. Each commit
-// edits one leaf: odd commits toggle a post text between 120 and 200 glyphs
-// (its line count changes), even commits toggle a like count between 1 and 2
-// glyphs (its width changes); the edited cell moves on every two commits. The
-// edited leaf gets YGNodeMarkDirty, which dirties the cloned path. (Fabric
-// calls yoga::Node::setDirty on each cloned node instead, which does not reset
-// `computedFlexBasis`; the C API has no equivalent.)
+// edits one leaf, in turn: a timestamp whose width changes by 0.04 pt (real
+// glyph advances are fractional: "1m" -> "2m"), next to a name and a handle
+// that shrink to fit the row, so their available widths move by a fraction of
+// a pixel; a post text toggling between 120 and 200 glyphs (its line count
+// changes); a like count toggling between 1 and 2 glyphs. The edited cell
+// moves on every three commits. The edited leaf gets YGNodeMarkDirty, which
+// dirties the cloned path. (Fabric calls yoga::Node::setDirty on each cloned
+// node instead, which does not reset `computedFlexBasis`; the C API has no
+// equivalent.)
 //
 // Replaced nodes are freed after each layout once no reachable node names them
 // as its owner, so a freed node's address is never mistaken for a live owner
@@ -863,7 +867,7 @@ struct FabricCommit : Workload {
   YGNodeRef r = nullptr;
   std::vector<YGNodeRef> live; // every node not yet freed
   std::map<YGNodeRef, YGConfigRef> configOf;
-  std::vector<std::vector<size_t>> postPaths, likePaths;
+  std::vector<std::array<std::vector<size_t>, 3>> paths; // per cell, per edit
   std::deque<Text> alt; // the second Text of every edited leaf
   std::map<const Text*, Text*> other;
   uint64_t n = 0;
@@ -900,15 +904,15 @@ struct FabricCommit : Workload {
     }
     return p;
   }
-  void addAlt(YGNodeRef leaf, float chars) {
+  void addAlt(YGNodeRef leaf, float chars, float charW) {
     Text* a = static_cast<Text*>(YGNodeGetContext(leaf));
-    alt.push_back(Text{chars, a->charW, a->lineH});
+    alt.push_back(Text{chars, charW, a->lineH});
     other[a] = &alt.back();
     other[&alt.back()] = a;
   }
 
-  // Returns {post text, like count}.
-  std::pair<YGNodeRef, YGNodeRef> buildCell(Tree& tr, YGNodeRef parent, int i) {
+  // Returns the edited leaves: {timestamp, post text, like count}.
+  std::array<YGNodeRef, 3> buildCell(Tree& tr, YGNodeRef parent, int i) {
     Rng rng(static_cast<uint64_t>(i) + 101);
     YGNodeRef wrapper = tr.node(parent);
     YGNodeRef post = tr.node(wrapper);
@@ -927,13 +931,15 @@ struct FabricCommit : Workload {
     YGNodeStyleSetGap(meta, YGGutterColumn, 4);
     YGNodeStyleSetFlexShrink(tr.text(meta, rng.range(6, 24)), 1);
     YGNodeStyleSetFlexShrink(tr.text(meta, rng.range(10, 30)), 10);
-    YGNodeStyleSetFlexShrink(tr.text(meta, 2), 0);
+    YGNodeRef time = tr.text(meta, 2);
+    YGNodeStyleSetFlexShrink(time, 0);
+    addAlt(time, 2, 7.52f);
 
     // A `flex: 1` wrapper in an auto-height column (basis 0, retainable).
     YGNodeRef body = tr.node(content);
     YGNodeStyleSetFlex(body, 1);
     YGNodeRef postText = tr.text(body, 120);
-    addAlt(postText, 200);
+    addAlt(postText, 200, 7.5f);
 
     // Three `flex: 1` texts sharing a row: widths on the 1/3-pt grid.
     YGNodeRef tags = tr.node(content);
@@ -969,15 +975,15 @@ struct FabricCommit : Workload {
       tr.box(btn, 18, 18);
       like = tr.text(btn, 1, 13);
     }
-    addAlt(like, 2);
-    return {postText, like};
+    addAlt(like, 2, 6.5f);
+    return {time, postText, like};
   }
 
   void setup() override {
     gFabric = this;
     t = std::make_unique<Tree>();
     YGNodeRef content = rnScrollContent(*t);
-    std::vector<std::pair<YGNodeRef, YGNodeRef>> leaves;
+    std::vector<std::array<YGNodeRef, 3>> leaves;
     for (int i = 0; i < cells; i++) {
       leaves.push_back(buildCell(*t, content, i));
     }
@@ -999,9 +1005,8 @@ struct FabricCommit : Workload {
     t->configs.clear();
     r = t->root;
     t->root = nullptr;
-    for (auto& [postText, like] : leaves) {
-      postPaths.push_back(pathTo(postText));
-      likePaths.push_back(pathTo(like));
+    for (auto& l : leaves) {
+      paths.push_back({pathTo(l[0]), pathTo(l[1]), pathTo(l[2])});
     }
     YGNodeCalculateLayout(r, 390, 844, YGDirectionLTR);
     rnLayout(r);
@@ -1011,8 +1016,8 @@ struct FabricCommit : Workload {
   // One commit: clone the root-to-leaf path, edit the leaf, dirty it.
   void prepare() override {
     n++;
-    size_t cell = static_cast<size_t>((n / 2) % static_cast<uint64_t>(cells));
-    const std::vector<size_t>& path = (n & 1) ? postPaths[cell] : likePaths[cell];
+    size_t cell = static_cast<size_t>((n / 3) % static_cast<uint64_t>(cells));
+    const std::vector<size_t>& path = paths[cell][n % 3];
     std::vector<YGNodeRef> old{r};
     for (size_t i : path) {
       old.push_back(YGNodeGetChild(old.back(), i));
