@@ -27,8 +27,8 @@ CI on `main` rewrites these rows after every push.
 | Suite | Passing | Pass rate | |
 |---|--:|--:|---|
 | [Yoga's test suite](https://github.com/react/yoga/tree/52f6d0bd3824296b8e852cb4fcdf3b9821ab2aa5/tests) <!-- yoga-suite --> | 752 / 752 | 100.00% | Yoga 52f6d0bd's gtest files, unmodified, linked against barre's C API; 752 tests in 54 files; 107 more need Yoga's C++ internals ([skip.txt](conformance/skip.txt)) |
-| [barre's own tests](conformance/tests) <!-- barre --> | 95 / 95 | 100.00% | the internals-only Yoga tests ported to the C API, and regression tests for Yoga bugs |
-| [Yoga bugs fixed](conformance/divergences.md) <!-- yoga-bugs --> | 34 / 34 | 100.00% | tests that real Yoga fails by design, in 10 files; the same runner linked against Yoga passes everything else in scope (813 tests) |
+| [barre's own tests](conformance/tests) <!-- barre --> | 100 / 102 | 98.04% | the internals-only Yoga tests ported to the C API, and regression tests for Yoga bugs |
+| [Yoga bugs fixed](conformance/divergences.md) <!-- yoga-bugs --> | 34 / 34 | 100.00% | tests that real Yoga fails by design, in 10 files; the same runner linked against Yoga passes everything else in scope (820 tests) |
 
 <!-- results:end -->
 
