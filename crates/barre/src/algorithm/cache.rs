@@ -68,7 +68,9 @@ pub fn can_use_cached_measurement(
 /// differently at 140.6 than at 141), making the layout depend on history.
 /// barre's internal lookup compares them unrounded (as Yoga does with a
 /// point scale factor of 0), so a relayout matches a fresh layout. The
-/// exported [`can_use_cached_measurement`] keeps Yoga's tolerance.
+/// exported [`can_use_cached_measurement`] keeps Yoga's tolerance. Inlined
+/// into the lookup, where `config` is known to be `None` (perf).
+#[inline(always)]
 pub fn can_use_cached_measurement_exact(
     width_mode: SizingMode,
     available_width: f32,
@@ -102,6 +104,7 @@ pub fn can_use_cached_measurement_exact(
 
 /// `canUseCachedMeasurement`'s body. `config` is `None` for the exact
 /// comparison, which takes Yoga's `config == nullptr` branch (no rounding).
+#[inline(always)]
 fn can_use_cached_measurement_impl(
     width_mode: SizingMode,
     available_width: f32,
@@ -395,10 +398,11 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
         None
     } else if perform_layout {
         let cached_layout = layout.cached_layout.get();
-        if inexact_equals(cached_layout.available_width, available_width)
-            && inexact_equals(cached_layout.available_height, available_height)
-            && cached_layout.width_sizing_mode == width_sizing_mode
+        // The sizing modes are compared first (cheaper; the same answer).
+        if cached_layout.width_sizing_mode == width_sizing_mode
             && cached_layout.height_sizing_mode == height_sizing_mode
+            && inexact_equals(cached_layout.available_width, available_width)
+            && inexact_equals(cached_layout.available_height, available_height)
             && owner_key_matches(&cached_layout)
         {
             Some(CachedResult::Layout)
@@ -408,10 +412,10 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
     } else {
         for i in 0..layout.next_cached_measurements_index.get() as usize {
             let entry = layout.cached_measurements[i].get();
-            if inexact_equals(entry.available_width, available_width)
-                && inexact_equals(entry.available_height, available_height)
-                && entry.width_sizing_mode == width_sizing_mode
+            if entry.width_sizing_mode == width_sizing_mode
                 && entry.height_sizing_mode == height_sizing_mode
+                && inexact_equals(entry.available_width, available_width)
+                && inexact_equals(entry.available_height, available_height)
                 && owner_key_matches(&entry)
             {
                 return Some(CachedResult::Measurement(i));
