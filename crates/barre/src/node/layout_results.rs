@@ -79,6 +79,35 @@ impl Default for CachedMeasurement {
     }
 }
 
+impl CachedMeasurement {
+    /// barre-only (yoga#2019): sets the generation and flex-basis anchor key
+    /// of the entry in `cell`, leaving its other fields as they are. The same
+    /// as `cell.set(CachedMeasurement { generation, anchor_..., ..cell.get() })`,
+    /// but it writes only these fields (perf: `Cell::set` of the whole entry
+    /// stores all of them again).
+    #[inline]
+    pub fn restamp(
+        cell: &Cell<CachedMeasurement>,
+        generation: u32,
+        anchor_available_width: f32,
+        anchor_available_height: f32,
+        anchor_width_sizing_mode: SizingMode,
+        anchor_height_sizing_mode: SizingMode,
+    ) {
+        let entry = cell.as_ptr();
+        // SAFETY: a `Cell` never lends out references to its contents and is
+        // `!Sync`, so nothing else can access the entry during these writes
+        // (the same reasoning that makes `Cell::set` safe).
+        unsafe {
+            (*entry).generation = generation;
+            (*entry).anchor_available_width = anchor_available_width;
+            (*entry).anchor_available_height = anchor_available_height;
+            (*entry).anchor_width_sizing_mode = anchor_width_sizing_mode;
+            (*entry).anchor_height_sizing_mode = anchor_height_sizing_mode;
+        }
+    }
+}
+
 /// barre-only, no Yoga counterpart (yoga#1552, yoga#2019): the most recent
 /// call to `calculate_layout_internal` on this node in a layout after which,
 /// in a fresh layout, its children hold freshly rewritten flex bases. It
@@ -108,6 +137,10 @@ pub struct FlexBasisAnchor {
     /// `singleFlexChild`) a basis of 0; the replay must be followed by the
     /// same write. Fits in the struct's padding (still 28 bytes).
     pub single_flex_child_pending: bool,
+    /// Set when such a call found no replay pending: the same write is
+    /// deferred to the start of the node's next run in this layout (perf;
+    /// `calculate_layout_internal`). Also in the padding (still 28 bytes).
+    pub single_flex_child_deferred: bool,
 }
 
 impl Default for FlexBasisAnchor {
@@ -124,6 +157,7 @@ impl Default for FlexBasisAnchor {
             reason: LayoutPassReason::Initial,
             replay_pending: false,
             single_flex_child_pending: false,
+            single_flex_child_deferred: false,
         }
     }
 }

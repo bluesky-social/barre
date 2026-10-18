@@ -167,6 +167,51 @@ T-0006) it was 178 µs (0.68×), on top of `0e42d3c` (after) 323 µs. Measure
 calls and new-layout nodes are unchanged, so it is extra relayout work in
 T-0006's flex-basis anchor path; worth a look by whoever owns it.
 
+**Update (branch `perf-fixcost`, 2026-10-18).** Stack layer #17
+(`fix-barre-only-relayout`, five relayout == fresh fixes) cost `rn/` 0.52× →
+0.55×, `clean` 12 → 16 ns, `rotate` 233 → 247 µs. Profiling showed little of
+it was the fixes' logic: it was calls, stores and child scans on the cache-hit
+path. Exact changes (bench checksums, measure counts and new-layout counts
+unchanged; `./conf` 852/2 with 0 regressions, `./conf --engine rn-barre`
+identical to stack; `./fuzz` failure lists byte-identical to stack at default,
+`--wide`, `--steps 20` and `--siblings 10 --depth 6 --kids 3 --steps 20
+--wide`), measured `--rev` stack vs each commit, interleaved, two full runs each:
+
+| commit | change | effect (two runs, vs the commit before) |
+|---|---|---|
+| `e4645cd` | fixed-size test computes margins only on a `FitContent` axis; the single flex child found once, not twice | geomean 0.550 → 0.547 |
+| `de9f89a` | hit and run paths of `calculate_layout_internal` out of line | **reverted** (`83cd493`): clean 16 → 19.6 ns, geomean 0.567 |
+| `8774f14` | `singleFlexChild` zero-basis write of an earlier-layout hit deferred to the node's next run in the layout (none for a node that only hits) | `text_same_size` 11.7 → 11.4 µs, `text_change` −1.5%, rest neutral |
+| `64b7054` | inline cheap tests on the hit path: owner-size bit test (resolution out of line), has-children without counting (no `display: contents` child), fixed-size guards (margins out of line) | clean 16.0 → 13.3 ns, `text_same_size` −5%, `rotate` 247 → 239 µs, geomean 0.549 → 0.528 |
+| `32c08b1` | exact measurement-cache test inlined, sizing modes compared first | fresh −2…−4%, `rotate` 235 µs, geomean 0.518 |
+| `143e81a` | `Node::set_dirty` inlined; slow owner-key test takes the entry's owner sizes by value | clean 13.2 ns, `text_same_size` 10.6 µs, geomean 0.511 |
+| `32979b3` | restamp writes only the five stamp fields (`CachedMeasurement::restamp`) instead of `Cell::set` of the whole 40-byte entry | **clean 13.2 → 11.5 ns**, `rotate` 230 → 228 µs, geomean 0.503 |
+| `b926df9` | `find_cached_result` returns the entry it matched (read once) | neutral (kept: simpler) |
+| `d2de75a`, `9e6cf5d`, `e12c2e2` | anchor flags written field by field; iterator end without dropping the backtrack `Vec`; rejection's child scan `#[inline(never)]` | neutral or clean +0.3–0.6 ns: **reverted** (`debd57e`, `d2c515a`, `96b5467`) |
+
+Result (`debd57e`, same tree as `b926df9`), vs stack `171ce36`, full
+`bench/run`, two runs each: `clean` 16.2 → 11.4–11.8 ns (pre-#17 12.2);
+`text_same_size` 11.8–11.9 → 10.4–10.5 µs (pre-#17 10.6); `text_change`
+20.4–20.5 → 19.1–19.2 µs (pre-#17 19.1); `insert_remove` 16.0 → 14.9–15.0 µs
+(pre-#17 15.0); `rotate` 249–250 µs (0.97×) → 230 µs (0.88–0.89×; pre-#17
+0.91×); `rn/` geomean 0.549 → 0.500 (pre-#17 0.516); every layout workload
+(`yoga/`, `capture/`, `rn/`) faster; all `*.clean` 16 → 11.5 ns. `micro/`
+(C-API calls, no layout) moves 1–3% either way (code layout:
+`insert_remove_child` 23.6 → 24.2 ns already at `32c08b1`).
+
+The deferred write (`8774f14`) relies on one assumption, stated at the code:
+only the node's own runs read or rewrite its children's flex bases, and a
+basis with an earlier generation is rewritten before it is read, so moving the
+write from the hit to the start of the node's next run changes nothing, unless
+something marks the child dirty (which resets its basis) from inside the
+layout, e.g. a measure function calling `YGNodeMarkDirty` on another node.
+
+`rotate` is still above 0.85×: what remains of the gap is T-0006's replays
+(434 measure-only runs per layout, against 473 real ones; Layout calls per
+node, item 3), and there is no cheap exact test for when a replay is a no-op
+(idea 1). The rest of the profile is Yoga-structured work and style lookups
+(`resolved_max_dimension`, `compute_margin`; idea 3).
+
 Perf commits (each `./conf` clean, checksums unchanged; numbers are
 `--quick` A/B against the previous commit):
 

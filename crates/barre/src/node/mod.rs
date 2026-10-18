@@ -561,6 +561,7 @@ impl Node {
 
     /// `Node::setDirty`: calls the dirtied function when the node becomes
     /// dirty.
+    #[inline]
     pub fn set_dirty(&self, is_dirty: bool) {
         if is_dirty == self.is_dirty.get() {
             return;
