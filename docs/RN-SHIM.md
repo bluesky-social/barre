@@ -176,11 +176,36 @@ loads, not calls. Pixel differences between the arms are RN 0.88's older
 rounding (e.g. `feed50`'s text nodes 1 pt taller under RN's Yoga at
 y ≈ 17 000, yoga#2037), already visible as `rn-yoga` vs `yoga` mismatches.
 
-### Phase B: social-app integration (in progress, handover 2026-10-18)
+### Phase B: social-app integration (built and launched on iOS, 2026-10-18)
 
 Worktree `~/Documents/Programming/bluesky-social/social-app-barre`, branch
 `samuel/barre-layout-engine`, stacked on #12057 (RN 0.88 / Expo 58) and
 #12024 (Android source builds). Nothing here is committed or pushed yet.
+
+**Built and launched (2026-10-18, simulator `iPhone 17 Pro (barre)`,
+`564B0A5F-F8BA-480A-8AA6-240F060768CA`):**
+
+- barre-rn for iOS rebuilt from `rn-shim` at `8899c01` with
+  `BARRE_SRC=/tmp/barre-rn scripts/barre/build.sh ios` (4.5 s, warm cache).
+- One Release binary for the simulator, no Metro: `xcodebuild -workspace
+  Bluesky.xcworkspace -scheme Bluesky -configuration Release -sdk
+  iphonesimulator -destination 'platform=iOS Simulator,id=<udid>'
+  -derivedDataPath /tmp/bsky-barre-dd ONLY_ACTIVE_ARCH=YES ARCHS=arm64
+  build`, 5 min 24 s with a warm ccache. The two overrides are needed
+  because Release otherwise builds an x86_64 simulator slice and the
+  xcframework has none (`BARRE_IOS_INTEL_SIM=1` for `build.sh` adds one).
+  No `pod install` and no file changes were needed; the optimisation flags
+  are untouched. Bundle id `xyz.blueskyweb.app`.
+- Launch: Yoga arm `xcrun simctl launch <udid> xyz.blueskyweb.app`; barre arm
+  `SIMCTL_CHILD_BARRE_LAYOUT=1 xcrun simctl launch ...`.
+- Both arms stay alive (22 s), with no crash reports. The barre arm prints
+  `barre: laying out with barre` (only after `barre_rn_init` succeeds). With
+  lldb breakpoints over 25 s from launch: the Yoga arm made 0 calls to
+  `barre_rn_calculate_layout` and 11 to `calculateLayoutYoga`; the barre arm
+  made 11 and 0, and never entered `calculateLayoutInternal`. So in the
+  barre arm all layout goes through barre.
+- The logged-out splash screen renders pixel-identically in both arms (the
+  only difference is the status-bar clock).
 
 **What exists (uncommitted):**
 
@@ -193,15 +218,16 @@ Worktree `~/Documents/Programming/bluesky-social/social-app-barre`, branch
 - `patches/react-native@0.88.0.patch`: the original patch plus the Yoga hunks
   appended. They are byte-identical to `rn/patches/yoga-rn-0.88.patch` on this
   branch (checked: 0 diff lines), so no refresh is needed.
-- `pnpm-lock.yaml`: the only change is the `react-native` `patch_hash`,
-  repeated wherever it is referenced. That is what pnpm writes when the patch
-  changes, not an accidental regeneration.
-- `node_modules` already has the patch applied, `ios/` is prebuilt, and a
-  `BarreRN.xcframework` is already installed. It predates the fmt-only commit
-  and came from a checkout I did not record, so rebuild it before measuring.
-
-**Not verified:** no A/B build has been completed or launched. Treat every
-claim above about the app side as "reads right", not "works".
+- `pnpm-lock.yaml`: **not just the `patch_hash`** (an earlier version of
+  this handover said so; that was wrong, it was based on the first 30 changed
+  lines). The `react-native` `patch_hash` changes everywhere it is referenced,
+  which is expected, but 173 other changed lines remain: the expo
+  `patch_hash` and peer-hash suffixes (`7.16.0(2a73…)` → `7.16.0(c198…)`),
+  and removed `@babel/core 7.29.0` blocks. The file was regenerated at some
+  point (mtime 2026-10-17 21:03). Before committing, redo it from the branch's
+  own lockfile with only the patch change (`git checkout pnpm-lock.yaml`,
+  then let pnpm update it) and confirm the diff is the `patch_hash` lines.
+- `node_modules` has the patch applied and `ios/` is prebuilt.
 
 **Gotchas:**
 
@@ -218,24 +244,39 @@ claim above about the app side as "reads right", not "works".
 - Expect sub-pixel differences against RN's Yoga (barre follows the newer
   rounding, yoga#2037/#2040/#2041). That is expected, not a shim bug.
 
+**Not verified:** anything past the logged-out splash. No feed or thread
+was rendered (that needs an account on the barre simulator, which has no
+session), no layout timings, no check that barre and Yoga agree on screens
+with text measurement (sub-pixel differences are expected). The Android
+build was not tried.
+
 **Next steps:**
 
-1. Rebuild barre-rn (`BARRE=1`, iOS) and build the app once. The arm is a
-   launch switch, so one binary serves both arms.
-2. Launch it on the simulator `iPhone 17 Pro (barre)`
-   (`564B0A5F-F8BA-480A-8AA6-240F060768CA`) with and without `BARRE_LAYOUT=1`.
-   Check first that the barre arm starts and that a feed and a long thread
-   render the same as Yoga's.
-3. Give the argent comparison (scroll flow, layout timings) to a Sonnet
-   subagent at medium effort. Reuse the instrumentation and flow from the o2
-   experiment (raw data in `/tmp/bsky-o2-runs/`).
-4. Write the results here, and commit the social-app work in stacked
-   commits (`gh stack`, never `sync`).
+1. Decide which account to log in on the barre simulator (the o2 run used
+   `argent-testing.bsky.social` on `bsky-o2`). Do not paste credentials into
+   chat; `keyboard` supports `{{secret:NAME}}` placeholders.
+2. Port the o2 timing instrumentation into this worktree. The o2 runs read
+   `BSKY_YOGA_TIMING_START` / `BSKY_YOGA_TIMING` lines from
+   `<app data container>/tmp/bsky_yoga_timing.log` (parser:
+   `/tmp/bsky-o2-runs/scripts/parse_run.py`). It lives in the o2 worktree,
+   not here. Relabel `arm=` as yoga/barre and time the `calculateLayout`
+   dispatcher, so barre is timed too, not only `calculateLayoutYoga`.
+3. Reuse the flow `/tmp/bsky-o2-runs/.argent/flows/bsky-yoga-scenario.yaml`
+   (`SCENARIO.md` describes it) with this simulator's UDID. Argent's
+   `restart-app` may not pass `BARRE_LAYOUT`, and `launchArgs` won't help
+   (barre reads an environment variable), so launch the barre arm with
+   `simctl` outside the flow.
+4. Argent's native-devtools dylib is already injected into this simulator
+   (`DYLD_INSERT_LIBRARIES` in its launchd environment, from an earlier
+   session; both arms log `[NativeDevtoolsIos] connected`). It is in the
+   process during measurement for both arms; keep that in mind when
+   comparing against the o2 numbers.
+5. Fix the lockfile (above), write the results here, and commit the
+   social-app work in stacked commits (`gh stack`, never `sync`).
 
-Building was deliberately held back until the o2 experiment on `bsky-o2`
-finished (3:00am on 2026-10-18): an Xcode build on the same machine would
-perturb its timings. Do not use `bsky-o2`, the iPhone 14 or `social-app-o2`
-for this work.
+The build waited for the o2 experiment on `bsky-o2` to finish (3:00am on
+2026-10-18). Do not use `bsky-o2`, the iPhone 14 or `social-app-o2` for this
+work.
 
 ---
 

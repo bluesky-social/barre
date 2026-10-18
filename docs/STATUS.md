@@ -54,15 +54,18 @@ whatever it picks up.
      `crates/barre-rn`, the RN 0.88 Yoga patch, conf engines
      `rn-yoga`/`rn-yoga-patched`/`rn-barre`, `bench --rn`, and the
      podspec/CMake linking. Status and numbers are in §0 of `docs/RN-SHIM.md`.
-   - **Phase B (social-app) is stopped before its builds:** worktree
+   - **Phase B (social-app) builds and launches on iOS:** worktree
      `/Users/samuel/Documents/Programming/bluesky-social/social-app-barre`,
      branch `samuel/barre-layout-engine`, stacked on Samuel's #12057 (RN 0.88
      / Expo 58) and #12024 (Android source builds). It has uncommitted work.
-     The handover (what exists, what is unverified, gotchas, next steps) is
-     "Phase B" in §0 of `docs/RN-SHIM.md`. The builds wait for 3:00am on
-     2026-10-18, when another session's experiment on `bsky-o2` ends; then
-     build once, run both arms on the `iPhone 17 Pro (barre)` simulator, and
-     give the argent comparison to a Sonnet at medium effort.
+     One Release binary runs both arms on the `iPhone 17 Pro (barre)`
+     simulator; lldb shows the barre arm lays out only through barre. Only the
+     logged-out splash has been rendered. Details, the lockfile problem (the
+     diff is NOT just the `patch_hash`; it needs redoing before committing)
+     and next steps are in "Phase B" in §0 of `docs/RN-SHIM.md`. The argent
+     comparison (Sonnet, medium effort) is blocked on two things: which
+     account to log in on that simulator, and porting the o2 timing
+     instrumentation into the worktree.
    - **Priority:** correctness over speed. On-app measurements (below) show
      Yoga's own arithmetic is a small slice of a scrolling session.
 2. **Perf toward 0.5× Yoga's time** (`docs/BENCH.md` has the ranked ideas and
