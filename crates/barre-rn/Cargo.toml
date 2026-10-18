@@ -1,0 +1,17 @@
+[package]
+name = "barre-rn"
+description = "barre as React Native's layout engine: replaces yoga::calculateLayout over RN's C++ yoga::Nodes (docs/RN-SHIM.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "barre_rn"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+barre = { path = "../barre" }
+
+[lints]
+workspace = true

@@ -87,7 +87,8 @@ def main():
         argv, passthrough = argv[:i], argv[i + 1:]
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("workload")
-    ap.add_argument("--engine", default="barre", choices=["barre", "yoga"])
+    ap.add_argument("--engine", default="barre", choices=["barre", "yoga", "rn-yoga", "rn-barre"],
+                    help="rn-* need `-- --rn` (bench/run builds the RN binary only with --rn)")
     ap.add_argument("--time-ms", type=float, default=4000)
     ap.add_argument("--rate", type=int, default=4000, help="samples per second")
     ap.add_argument("--top", type=int, default=30)
@@ -107,7 +108,7 @@ def main():
     # after bench/run has rebuilt the engine.
     keep = OUT / f"{tag}.bin"
     if not args.reuse:
-        src = Path(bins[args.engine])
+        src = Path(bins["rn" if args.engine.startswith("rn-") else args.engine])
         shutil.rmtree(keep, ignore_errors=True)
         keep.mkdir(parents=True)
         shutil.copy2(src, keep / src.name)
@@ -119,7 +120,8 @@ def main():
                         "--rate", str(args.rate), "-o", str(prof), "--",
                         str(binary), "--run", args.workload, "--time-ms", str(args.time_ms), "--warmup-ms", "50", "--max-samples", "1000000000",
                         "--captures", str(BENCH.parent / "vendor" / "yoga" / "benchmark" / "captures")],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       env=dict(os.environ, BARRE_LAYOUT="1" if args.engine == "rn-barre" else "0"))
     p = json.load(gzip.open(prof))
     syms = json.load(open(str(prof).replace(".json.gz", ".json.syms.json")))
     st = syms["string_table"]

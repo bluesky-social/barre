@@ -1,0 +1,11 @@
+# barre fuzz case (docs/FUZZ.md)
+# class both (over scales 0 and 1)
+# minimised from seed 2289 mode 0, knobs --depth 4 --kids 3 --root-kids 3 --measure 50 --siblings 0 --steps 20: 11 -> 3 nodes, 20 -> 10 sizes, 238 checks
+# at scale 0, last size: /0/0 width: relayout 398 fresh 399
+mode 0              # root pinned through min/max
+scale 0
+errata all
+sizes 401x100 100x100 100x200 100x300 100x500 200x100 100x568 200x200 400x100 401x100
+root
+  node dir=row                                              # /0
+    node mar=1 text=500                                     # /0/0

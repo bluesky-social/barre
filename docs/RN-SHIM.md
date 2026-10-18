@@ -23,6 +23,263 @@ generic over a node-access trait from M1** (§3.4), otherwise M5 is a rewrite.
 > that are expected (barre follows the newer rounding). Grid is present in both. Rebase the patch on
 > `react-native@0.88.x` when doing the integration; line numbers below are 0.86.3.
 
+## 0. Implementation status (milestone 5)
+
+### Phase A: host-tested (done)
+
+What exists, and where it deviates from §3 (c):
+
+- **`crates/barre-rn`** (staticlib, exports only `barre_rn_init`,
+  `barre_rn_state_size`, `barre_rn_layout_offsets`,
+  `barre_rn_calculate_layout`): `node::RnNode` implements barre's
+  `LayoutNode` over RN's `yoga::Node*`; `state::State` is the per-node blob
+  (header, barre `Config` and `Style` snapshots, barre `LayoutResults`,
+  ~1.1 KB of the 1280 reserved). The only change to `crates/barre` is
+  `LayoutResults::OFFSETS` (byte offsets of the result fields, for C++).
+- **`rn/patches/yoga-rn-0.88.patch`** (relative to the react-native package
+  root, so the same hunks go into social-app's `pnpm patch`):
+  - `yoga/barre/BarreRn.h`: the C interface (state header, flattened
+    style/config, host table, layout offsets) mirrored by
+    `crates/barre-rn/src/host.rs`; ABI version + `struct_size` checked at init.
+  - `yoga/barre/BarreHost.{h,cpp}`: the host. Offsets into `yoga::Node` are
+    measured at init on a probe node (pointer differences, so no
+    `-Winvalid-offsetof`; bitfield flags found by toggling each setter on a
+    node built in zeroed memory; the libc++ `std::vector` layout checked on
+    a probe with two children). `barre::enabled()` reads `BARRE_LAYOUT`
+    (Apple, host) or `debug.barre.layout` (Android) once; if barre is
+    requested but its init fails, it **aborts** rather than silently laying
+    out with Yoga (an A/B would compare Yoga with itself).
+  - `node/Node.h`: `alignas(16) std::byte barreState_[BARRE_RN_STATE_SIZE]`
+    (copied by the defaulted copy-ctor, zeroed in new/reset nodes), a friend
+    for the host, and `barrePend(bit)`, called by **every** path that can
+    change what barre snapshotted or reset what Yoga resets: non-const
+    `style()` and `setStyle()` (style snapshot), `setConfig()`, `setLayout()`
+    (YGNodeRemoveChild & co.), `markDirtyAndPropagate()` (computed flex
+    basis). The move-ctor copies the blob; `Node.cpp`'s own reads of a
+    child's display go through `std::as_const` so tree edits don't
+    invalidate snapshots needlessly.
+  - `algorithm/CalculateLayout.cpp`: `calculateLayout` dispatches to
+    `barre::calculateLayout` or `calculateLayoutYoga` (the old body).
+  - `YGNodeLayout.cpp`: every `YGNodeLayoutGet*` reads barre's results from
+    the blob when barre is on (`barre::layoutState`), else Yoga's.
+- **Deviation: no layout write-back.** §3 (c) (and the architect's note)
+  had barre write results into Yoga's `LayoutResults` at the end. Instead
+  barre's blob is the single source of truth and the C API getters read it
+  through offsets barre exports (`barre_rn_layout_offsets`). Reasons: RN
+  reads layout only through `YGNodeLayoutGet*` (no `getLayout()` user
+  outside `ReactCommon/yoga`, nor in screens/safe-area/svg/expo); it costs
+  one branch per getter instead of an end-of-pass walk with a write per
+  node; and every node is always consistent, including nodes a pass reached
+  but did not flag (rounding) and nodes it did not reach. Yoga's
+  `LayoutResults` keeps its defaults, which the getters fall back to for
+  nodes barre has not laid out (or that Yoga reset: `setLayout`).
+- **Hot path without calls:** children (`std::vector` begin/end), owner,
+  config pointer, flags (dirty, hasNewLayout, node type, reference baseline,
+  containing block), function-pointer presence and min-content sizes are
+  plain loads at the measured offsets; the snapshots and results are in the
+  blob. Each node is checked once per layout pass (`header.pass`, a pass id
+  in the handle): pending bits from C++, config pointer and
+  `Config::version_` (configs change without touching their nodes). Calls
+  into C++ remain only where Yoga calls out (measure, baseline,
+  `cloneChildrenIfNeeded` when a child is not owned, the dirtied callback
+  via `setDirty(true)`) and to re-snapshot a changed style/config.
+- **Errata:** barre lays out with `(errata & 0xF) | 16`. RN 0.88's Yoga
+  knows bits 1|2|4|8 and always has the pre-yoga#2006 first-pass behaviour,
+  which in barre (= vendor/yoga) is bit 16 `FlexFirstPassUsesRunningTotals`.
+  Masking alone (as originally planned) would turn the yoga#2006 fix *on*
+  and change layouts against RN's Yoga.
+- **Events:** barre publishes none of Yoga's `yoga::Event`s (RN doesn't
+  subscribe).
+
+**Conformance** (`./conf --engine rn-yoga | rn-yoga-patched | rn-barre`,
+docs/CONFORMANCE.md):
+
+| engine | pass | fail | build-fail | notes |
+|---|---|---|---|---|
+| `barre` (barre-ffi) | 847/847 | 0 | 0 | |
+| `rn-yoga` (stock RN 0.88) | 792 + 34 xfail | 5 | 16 | version skew, below |
+| `rn-yoga-patched` | 792 + 34 xfail | 5 | 16 | identical per test to `rn-yoga` |
+| `rn-barre` | 829 | 2 | 16 | everything barre passes except the skew |
+| `rn-yoga-patched --no-skip` | 892 + 34 xfail | 5 | 23 | |
+| `rn-barre --no-skip` | 921 | 10 | 23 | + 8 `EventsTest` (barre emits no events) |
+
+Version skew (RN 0.88's Yoga vs `vendor/yoga` 52f6d0bd), all expected:
+- 16 build-fails: `YGFirstChildMinWidthTest`, `barre/YGConfigTest`,
+  `barre/YGFirstPassRunningTotalsTest` use `YGErrataFlexFirstPassUsesRunningTotals`,
+  which RN 0.88's headers lack (`--no-skip` adds 7 more files that need
+  newer internals).
+- `YGDirtyMarkingTest.dirty_propagation_through_child_set_to_display_contents`
+  and `YGStyleTest.copy_style_box_sizing` fail on both arms: they test RN
+  0.88's C++ (`YGNodeStyleSetDisplay`'s owner recount, `Style::operator==`),
+  which the shim keeps.
+- `YGRoundingLargeOffsetTest` and two `YGRoundingMeasureFuncTest` tests fail
+  on RN's Yoga (older pixel rounding, before yoga#2037/#2040/#2041) and
+  pass on `rn-barre` (barre follows the newer rounding).
+- The 34 `yoga-divergences.txt` tests (Yoga bugs barre fixes) xfail on RN's
+  Yoga and pass on `rn-barre`.
+
+`--no-skip` matters here: with real C++ nodes, the files `skip.txt` excludes
+for needing Yoga internals link, and `YGPersistentNodeCloningTest`,
+`YGPersistenceTest`, `YGNodeCallbackTest`, `YGDirtiedTest`, `CacheTest` pass
+on `rn-barre` exactly as on Yoga: the clone callback, copy-constructed nodes
+and the dirtied callback behave through the host.
+
+**Host-interface cost** (`bench/run --rn`, docs/BENCH.md; 5 rounds × 300
+ms, Apple M4 Pro, barre-rn and barre-ffi with fat LTO, RN Android's C++
+flags; barre at `7b2b248` + this work). Every `rn-barre` layout is
+bit-identical to `barre`'s (checksums), measure-call and hasNewLayout counts
+equal. Geometric means over 30 layout workloads:
+
+| ratio | what it measures | geomean |
+|---|---|---|
+| `rn-barre/rn-yoga` | the in-app A/B (same binary, switch on/off) | **1.11×** |
+| `rn-barre/barre` | host interface over RN's C++ nodes vs barre's own C ABI | 1.35× |
+| `rn-yoga/yoga` | the patch (+1280-byte node) and version skew, on Yoga | 1.07× |
+
+| workload | yoga | barre | rn-yoga | rn-barre | rn-barre/rn-yoga | rn-barre/barre |
+|---|---|---|---|---|---|---|
+| `capture/feed-android` | 638 µs | 399 µs | 661 µs | 559 µs | 0.85× | 1.40× |
+| `capture/chat-mac` | 3.46 ms | 2.36 ms | 3.58 ms | 3.10 ms | 0.87× | 1.31× |
+| `rn/feed50/fresh` | 1.57 ms | 1.07 ms | 1.62 ms | 1.47 ms | 0.91× | 1.38× |
+| `rn/feed50/text_change` | 33.5 µs | 26.8 µs | 35.5 µs | 32.2 µs | 0.91× | 1.20× |
+| `rn/feed50/text_same_size` | 31.2 µs | 17.5 µs | 33.5 µs | 21.2 µs | 0.63× | 1.21× |
+| `rn/feed50/rotate` | 256 µs | 371 µs | 264 µs | 457 µs | 1.73× | 1.23× |
+| `rn/feed50/resize` | 1.47 ms | 1.03 ms | 1.52 ms | 1.30 ms | 0.85× | 1.26× |
+| `rn/feed50/insert_remove` | 25.2 µs | 20.3 µs | 27.0 µs | 24.2 µs | 0.90× | 1.19× |
+| `rn/deep20/fresh` | 26.2 ms | 15.9 ms | 27.9 ms | 18.8 ms | 0.68× | 1.18× |
+| `rn/wide_column1000/fresh` | 892 µs | 537 µs | 926 µs | 1.05 ms | 1.13× | 1.95× |
+| `rn/wrap_grid300/fresh` | 443 µs | 334 µs | 523 µs | 648 µs | 1.24× | 1.94× |
+| `rn/*/clean` (nothing dirty) | 21 ns | 33 ns | 22 ns | 39 ns | 1.78× | 1.18× |
+
+Where the interface cost goes (`bench/profile ... --engine rn-barre -- --rn`):
+- **First layout of a node** (the `fresh` workloads, wide trees worst): the
+  style snapshot (C++ flattens `yoga::Style` through its value pool, ~36
+  edge reads; Rust rebuilds barre's `Style`), the config snapshot, and
+  initialising the 1.1 KB blob. The whole rn-barre − barre gap in
+  `wide_column1000` (4000 nodes) is ~130 ns per node, most of it this. In
+  RN it is paid once per mounted shadow node, then only when its style
+  changes.
+- **Per visit**: the state pointer and offset loads instead of barre's own
+  fields; the once-per-pass check (config pointer + `version_` loads).
+  Before the pass stamp (checking pending bits, style generation and
+  config on every `child(i)`), that check was 10% of `feed50/fresh`'s
+  samples; now each node is checked once per pass.
+- No calls into C++ on the steady-state path: `rotate` (whole-tree
+  relayout, no style change) is 1.23× barre, all of it loads.
+- `rotate` is slower than Yoga in both barre arms: T-0006's flex-basis
+  anchor (docs/BENCH.md), not the shim.
+
+Getting closer to barre-ffi would mean caching more per node in the blob
+(children pointer and count, flags) or a cheaper snapshot (copying
+`yoga::Style`'s pool handles and decoding lazily); the remaining gap is
+loads, not calls. Pixel differences between the arms are RN 0.88's older
+rounding (e.g. `feed50`'s text nodes 1 pt taller under RN's Yoga at
+y ≈ 17 000, yoga#2037), already visible as `rn-yoga` vs `yoga` mismatches.
+
+### Phase B: social-app integration (built and launched on iOS, 2026-10-18)
+
+Worktree `~/Documents/Programming/bluesky-social/social-app-barre`, branch
+`samuel/barre-layout-engine`, stacked on #12057 (RN 0.88 / Expo 58) and
+#12024 (Android source builds). Nothing here is committed or pushed yet.
+
+**Built and launched (2026-10-18, simulator `iPhone 17 Pro (barre)`,
+`564B0A5F-F8BA-480A-8AA6-240F060768CA`):**
+
+- barre-rn for iOS rebuilt from `rn-shim` at `8899c01` with
+  `BARRE_SRC=/tmp/barre-rn scripts/barre/build.sh ios` (4.5 s, warm cache).
+- One Release binary for the simulator, no Metro: `xcodebuild -workspace
+  Bluesky.xcworkspace -scheme Bluesky -configuration Release -sdk
+  iphonesimulator -destination 'platform=iOS Simulator,id=<udid>'
+  -derivedDataPath /tmp/bsky-barre-dd ONLY_ACTIVE_ARCH=YES ARCHS=arm64
+  build`, 5 min 24 s with a warm ccache. The two overrides are needed
+  because Release otherwise builds an x86_64 simulator slice and the
+  xcframework has none (`BARRE_IOS_INTEL_SIM=1` for `build.sh` adds one).
+  No `pod install` and no file changes were needed; the optimisation flags
+  are untouched. Bundle id `xyz.blueskyweb.app`.
+- Launch: Yoga arm `xcrun simctl launch <udid> xyz.blueskyweb.app`; barre arm
+  `SIMCTL_CHILD_BARRE_LAYOUT=1 xcrun simctl launch ...`.
+- Both arms stay alive (22 s), with no crash reports. The barre arm prints
+  `barre: laying out with barre` (only after `barre_rn_init` succeeds). With
+  lldb breakpoints over 25 s from launch: the Yoga arm made 0 calls to
+  `barre_rn_calculate_layout` and 11 to `calculateLayoutYoga`; the barre arm
+  made 11 and 0, and never entered `calculateLayoutInternal`. So in the
+  barre arm all layout goes through barre.
+- The logged-out splash screen renders pixel-identically in both arms (the
+  only difference is the status-bar clock).
+
+**What exists (uncommitted):**
+
+- `plugins/withBarre.js`, registered in `app.config.js`. With `BARRE=1` at
+  prebuild it runs `scripts/barre/build.sh`; without it, a no-op.
+- `scripts/barre/build.sh` (`pnpm barre:build [ios|android|all]`): builds
+  `barre-rn` with `--profile release-lto` and installs it into
+  `react-native/ReactCommon/yoga/barre-rn/` (an xcframework on iOS, per-ABI
+  `.a` files on Android), where the patched podspec and CMakeLists pick it up.
+- `patches/react-native@0.88.0.patch`: the original patch plus the Yoga hunks
+  appended. They are byte-identical to `rn/patches/yoga-rn-0.88.patch` on this
+  branch (checked: 0 diff lines), so no refresh is needed.
+- `pnpm-lock.yaml`: **not just the `patch_hash`** (an earlier version of
+  this handover said so; that was wrong, it was based on the first 30 changed
+  lines). The `react-native` `patch_hash` changes everywhere it is referenced,
+  which is expected, but 173 other changed lines remain: the expo
+  `patch_hash` and peer-hash suffixes (`7.16.0(2a73…)` → `7.16.0(c198…)`),
+  and removed `@babel/core 7.29.0` blocks. The file was regenerated at some
+  point (mtime 2026-10-17 21:03). Before committing, redo it from the branch's
+  own lockfile with only the patch change (`git checkout pnpm-lock.yaml`,
+  then let pnpm update it) and confirm the diff is the `patch_hash` lines.
+- `node_modules` has the patch applied and `ios/` is prebuilt.
+
+**Gotchas:**
+
+- `build.sh` defaults `BARRE_SRC` to `../barre`, the main checkout, which has
+  no `crates/barre-rn` until the rn-shim layer (#12) merges. Until then set
+  `BARRE_SRC` to a checkout of the `rn-shim` branch. After the merge the
+  default works.
+- The switch is off by default. The arm is chosen at launch: `BARRE_LAYOUT=1`
+  (iOS) or the `debug.barre.layout` system property (Android). If barre is
+  requested but fails to initialise, the app aborts rather than falling back
+  to Yoga, so a running barre arm really is barre.
+- iOS Release builds RN's C++ at `-Os` (social-app#12061 would make it `-O2`).
+  Build both arms with the same optimisation flags or the A/B is meaningless.
+- Expect sub-pixel differences against RN's Yoga (barre follows the newer
+  rounding, yoga#2037/#2040/#2041). That is expected, not a shim bug.
+
+**Not verified:** anything past the logged-out splash. No feed or thread
+was rendered (that needs an account on the barre simulator, which has no
+session), no layout timings, no check that barre and Yoga agree on screens
+with text measurement (sub-pixel differences are expected). The Android
+build was not tried.
+
+**Next steps:**
+
+1. Decide which account to log in on the barre simulator (the o2 run used
+   `argent-testing.bsky.social` on `bsky-o2`). Do not paste credentials into
+   chat; `keyboard` supports `{{secret:NAME}}` placeholders.
+2. Port the o2 timing instrumentation into this worktree. The o2 runs read
+   `BSKY_YOGA_TIMING_START` / `BSKY_YOGA_TIMING` lines from
+   `<app data container>/tmp/bsky_yoga_timing.log` (parser:
+   `/tmp/bsky-o2-runs/scripts/parse_run.py`). It lives in the o2 worktree,
+   not here. Relabel `arm=` as yoga/barre and time the `calculateLayout`
+   dispatcher, so barre is timed too, not only `calculateLayoutYoga`.
+3. Reuse the flow `/tmp/bsky-o2-runs/.argent/flows/bsky-yoga-scenario.yaml`
+   (`SCENARIO.md` describes it) with this simulator's UDID. Argent's
+   `restart-app` may not pass `BARRE_LAYOUT`, and `launchArgs` won't help
+   (barre reads an environment variable), so launch the barre arm with
+   `simctl` outside the flow.
+4. Argent's native-devtools dylib is already injected into this simulator
+   (`DYLD_INSERT_LIBRARIES` in its launchd environment, from an earlier
+   session; both arms log `[NativeDevtoolsIos] connected`). It is in the
+   process during measurement for both arms; keep that in mind when
+   comparing against the o2 numbers.
+5. Fix the lockfile (above), write the results here, and commit the
+   social-app work in stacked commits (`gh stack`, never `sync`).
+
+The build waited for the o2 experiment on `bsky-o2` to finish (3:00am on
+2026-10-18). Do not use `bsky-o2`, the iPhone 14 or `social-app-o2` for this
+work.
+
+---
+
 ## 1. How RN 0.86 consumes Yoga
 
 ### 1.1 social-app's build mode

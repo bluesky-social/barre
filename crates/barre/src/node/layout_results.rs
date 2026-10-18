@@ -101,6 +101,13 @@ pub struct FlexBasisAnchor {
     pub owner_direction: Direction,
     pub reason: LayoutPassReason,
     pub replay_pending: bool,
+    /// Set when, while this anchor waits for its replay, a call with a
+    /// `StretchFit` main axis was answered from an earlier layout's cache
+    /// entry. In a fresh layout that call ran after the anchor and gave the
+    /// node's single flex child (`computeFlexBasisForChildren`'s
+    /// `singleFlexChild`) a basis of 0; the replay must be followed by the
+    /// same write. Fits in the struct's padding (still 28 bytes).
+    pub single_flex_child_pending: bool,
 }
 
 impl Default for FlexBasisAnchor {
@@ -116,6 +123,7 @@ impl Default for FlexBasisAnchor {
             owner_direction: Direction::Inherit,
             reason: LayoutPassReason::Initial,
             replay_pending: false,
+            single_flex_child_pending: false,
         }
     }
 }
@@ -137,8 +145,10 @@ pub const MAX_CACHED_MEASUREMENTS: usize = 8;
 /// Known residuals this does not fix: measure-function
 /// leaves reused through `can_use_cached_measurement`'s compatible sizes;
 /// pixel-grid rounding re-applied to cached subtrees; history more than one
-/// level deep (only a node's own anchor is compared); the `singleFlexChild`
-/// zero basis written by a skipped `StretchFit`-main call; and cache-slot
+/// level deep (only a node's own anchor is compared, and only its latest
+/// skipped anchor is replayed, so the calls an earlier skipped anchor or a
+/// skipped non-anchor call made into the children are lost:
+/// `conformance/tests/YGRelayoutFreshResidualTest.cpp`); and cache-slot
 /// occupancy by earlier-layout entries.
 #[derive(Clone, Debug)]
 #[repr(C)]
@@ -223,7 +233,37 @@ impl Default for LayoutResults {
     }
 }
 
+/// Byte offsets of the layout results inside [`LayoutResults`], for a host
+/// that embeds `LayoutResults` and reads results without calling into Rust
+/// (the React Native shim reads them in `YGNodeLayoutGet*`, docs/RN-SHIM.md).
+/// `direction` is a `u8` holding the `YGDirection` value, `had_overflow` a
+/// `bool`; the rest are `f32` arrays indexed by `Dimension` or
+/// `PhysicalEdge`, as their getters are.
+#[derive(Copy, Clone, Debug)]
+pub struct LayoutResultsOffsets {
+    pub direction: usize,
+    pub had_overflow: usize,
+    pub dimensions: usize,
+    pub raw_dimensions: usize,
+    pub position: usize,
+    pub margin: usize,
+    pub border: usize,
+    pub padding: usize,
+}
+
 impl LayoutResults {
+    /// See [`LayoutResultsOffsets`].
+    pub const OFFSETS: LayoutResultsOffsets = LayoutResultsOffsets {
+        direction: std::mem::offset_of!(LayoutResults, direction),
+        had_overflow: std::mem::offset_of!(LayoutResults, had_overflow),
+        dimensions: std::mem::offset_of!(LayoutResults, dimensions),
+        raw_dimensions: std::mem::offset_of!(LayoutResults, raw_dimensions),
+        position: std::mem::offset_of!(LayoutResults, position),
+        margin: std::mem::offset_of!(LayoutResults, margin),
+        border: std::mem::offset_of!(LayoutResults, border),
+        padding: std::mem::offset_of!(LayoutResults, padding),
+    };
+
     /// `layout = {}` / `setLayout({})` in Yoga: resets every field to its
     /// default, except the two that Yoga keeps on the node rather than in
     /// `LayoutResults` (`line_index`, `processed_dimensions`).
@@ -367,3 +407,8 @@ fn copy_cells<const N: usize>(dst: &[Cell<f32>; N], src: &[Cell<f32>; N]) {
 // A host may store `LayoutResults` as raw bytes and copy them (docs/API.md):
 // it must stay plain data.
 const _: () = assert!(!std::mem::needs_drop::<LayoutResults>());
+
+// `LayoutResultsOffsets` promises these representations.
+const _: () = assert!(std::mem::size_of::<Direction>() == 1);
+const _: () = assert!(std::mem::size_of::<Cell<bool>>() == 1);
+const _: () = assert!(std::mem::size_of::<[Cell<f32>; 4]>() == 16);
