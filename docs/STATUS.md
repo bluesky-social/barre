@@ -142,6 +142,31 @@ faster-than-Yoga metric". Open: after a few weeks of history, decide whether to
 promote it (`--enforce`, `required_checks` in `harness/orch.toml`, which this
 change did not touch).
 
+## Measure-call attribution (2026-10-18)
+
+Why barre made ~30% more text-measure callbacks than Yoga on the simulator,
+attributed on the host by ablation (docs/BENCH.md, "Measure calls against
+Yoga"). On every RN-shaped bench workload, `rn-barre` included, the whole
+excess is the yoga#1784 decision: barre's lookup compares a measure-function
+leaf's available sizes exactly, Yoga rounds them to the pixel grid. With
+Yoga's comparison every count equals Yoga's; T-0006's refusal and replays,
+T-0010's owner key and the flex-basis rewrite add nothing there. A new
+workload, `rn/fabric50/commit` (Fabric's clone-the-path commits), reproduces
+it once one edit changes a text's width by a fraction of a point (fractional
+glyph advances): a shrinking neighbour's available width moves by less than a
+pixel and only barre measures it again (1.25 vs 1.01 calls per commit over 80
+commits, 1.07 vs 1.00 over 400). That reuse is yoga#1784's mechanism, and the
+layouts differ (by 1/3 pt on one node). On the fuzzer's random trees most of
+the excess is instead the yoga#1552 basis rewrite, where Yoga's layouts are
+wrong. A narrower rule (tolerance against same-layout entries only, branch
+`measure-round-samegen`) recovers only the within-layout form and makes the
+fuzzer worse (2290 → 2318 failing pairs, barre-only 14 → 17), so it was
+dropped. **Open decision:** accept the extra calls as the price of yoga#1784,
+or give measure-function leaves Yoga's tolerance back (Yoga's counts; fuzzer
+failing pairs 7.6% → 25.4%). `./fuzz calls` / `calls-compare` compare two
+engines' callback counts. Not verified on the device: that its commits are of
+this kind.
+
 ## Open questions for Samuel
 
 - **LICENSE:** there's no LICENSE file; `Cargo.toml` says MIT. Who should be
