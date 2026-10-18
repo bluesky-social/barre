@@ -434,6 +434,202 @@ lto = "fat"
 codegen-units = 1
 ```
 
+## Regression check and the faster-than-Yoga metric
+
+The only ratchet that gates anything is conformance
+(`conformance/expected-pass.txt`). Speed had none: on 2026-10-17
+`micro/style_set_x20` went from barre/yoga 1.36x to 4.49x between CI runs
+`1854783423` and `52d96baf8c` (barre 91 -> 305 ns, Yoga flat at ~68 ns) and it
+stayed unnoticed for about 12 hours, because `bench.yml` only printed a table.
+The same commit improved the overall geomean from 0.898x to 0.662x, so one
+aggregate number would have hidden it. Hence per-workload checks.
+
+**Status: report-only (phase 1).** Nothing below can turn CI red. It is
+written to the job summary of `bench.yml` and to nothing else (no PR comment:
+PRs from forks only get a read-only token). Not yet verified in GitHub: the
+workflow steps were written without running them there, and the baseline
+fetch (`git fetch origin bench-results` with the job's read-only token, also
+on a labelled PR) has only been run from a workstation. The first labelled
+PR exercises it for real.
+
+### Two tiers
+
+1. **Coarse, in CI, on ratios.** `.github/scripts/bench_compare.py CURRENT
+   BASELINE` compares a run with the previous run on `main` (the newest
+   `results/*.json` on the `bench-results` branch; `bench.yml` fetches it
+   before the publish job adds the new one). The shared M1 runner is far
+   too noisy for absolute times or for 5% effects (load average up to ~30,
+   p10-p90 spread often over 100% of the median), but within one run Yoga
+   and barre are interleaved, so the ratio barre/yoga survives. It catches
+   what the 2026-10-17 miss was: a workload that got a lot worse.
+2. **Fine, on a quiet machine, by number.** Changes of a few percent are
+   decided by the numeric `check` of a perf ticket (docs/HARNESS.md, "Perf
+   tickets: gate the number in `check`"): `bench/run --quick NAME`, then a
+   command that exits non-zero unless the ratio is below a threshold. CI
+   cannot do that.
+
+### What is compared
+
+Per workload (every key of `results` that has both a `yoga` and a `barre`
+entry with a median and no `error`):
+
+- **ratio** = barre median / yoga median, in the current run and the
+  baseline; **change** = current ratio / baseline ratio - 1 (positive is
+  worse).
+- **interval**: barre's p10 and p90 each divided by the *same run's* Yoga
+  median. The current and baseline intervals are then compared; "overlap"
+  means `cur.lo <= base.hi and base.lo <= cur.hi`. Dividing by the run's own
+  Yoga median puts both intervals in "multiples of Yoga" and removes
+  runner-wide slowness; Yoga's own spread is not propagated (the check is
+  already lenient on this noise). A run without p10/p90 can never produce a
+  REGRESSION (the interval test is skipped and the report says so).
+
+Statuses (the constants are at the top of the script):
+
+| status | rule |
+|---|---|
+| REGRESSION | change > 30% **and** the intervals do not overlap |
+| WATCH | change > 10% (including a >30% change whose intervals overlap) |
+| IMPROVED | change < -10% |
+| steady | otherwise |
+
+Category aggregates (`rn/`, `capture/`, `yoga/`, `micro/`) are geomeans of the
+ratios over the workloads in both runs, with their change. A **geomean
+regression** is the non-micro geomean getting more than 5% worse. A workload
+in only one of the runs is reported as new / missing, an errored workload is
+skipped with a note, and a missing or unreadable baseline degrades to the
+metric alone.
+
+The script also writes a gate verdict, `would_pass` or `would_fail` with
+reasons (any REGRESSION, a geomean regression, or a ratchet failure), in both
+the markdown and the JSON. The exit status is 0 regardless; `--enforce`
+exits 1 on `would_fail`, and CI does not use it. Promoting the check later
+is that one flag.
+
+### Faster than Yoga
+
+For each workload, from the current ratio alone: **faster** below 0.95,
+**tie** from 0.95 to 1.05, **slower** above 1.05. The headline is
+`faster than Yoga: N of M (excluding micro/)`, with counts per category.
+`micro/` is excluded from the headline and has its own line: those workloads
+time C API calls (setters, getters, node creation) that Yoga's LTO inlines
+into the benchmark and barre's cannot (no cross-language LTO, see "Notes on
+fairness"), so barre is ~1.5x there by construction and the number would say
+nothing about layout. The README's benchmark block and the `bench-results`
+history table carry the headline.
+
+| run | faster than Yoga (excl. `micro/`) | note |
+|---|--:|---|
+| `9bbc3b4aa9`, `f47ea26fa8`, `300ee03da5`, `1854783423` | 21 of 29 | same barre code; the `*.clean` workloads were ~1.5x |
+| `52d96baf8c` | 28 of 29 | only `yoga/huge_nested` (1.07x) not faster |
+| `9122b937ed` | 27 of 29 | 1 tie (`rn/feed50/rotate`, 1.00x), 1 slower (`yoga/huge_nested`, 1.18x); `micro/` 0 of 6 |
+
+### The ratchet list
+
+`bench/expected-faster.txt` lists the workloads that comfortably beat Yoga
+(ratio <= 0.90 in run `9122b937ed`): 27 non-micro workloads, one per line,
+`#` for comments. The report says **would fail** for a listed workload whose
+current ratio is above 1.05 (slower than Yoga), and **would fail (marginal)**
+between 1.00 and 1.05 (no longer faster). Listed workloads between 0.90 and
+1.00 are fine (margin eroded, not flagged). A listed name that is not in the
+run (a filtered run, a renamed workload) gets a note. Both verdicts are part
+of the gate verdict only.
+
+Update it after a deliberate change, in its own commit:
+
+```
+.github/scripts/bench_compare.py RESULT.json --update-list
+```
+
+which rewrites the file from a run (every non-micro workload at <= 0.90).
+A workload may enter the list as it improves; leaving it needs a waiver.
+
+### Waivers
+
+Some trades are deliberate (layer #17 gave up ~5% on relayout paths for
+correctness). Those must be explicit rather than bypassed or silently
+absorbed. Convention, **documented only: not enforced and no
+`bench/waivers.md` exists yet**. When a gate is enforced, a flagged workload
+is excused if `bench/waivers.md` has a row for it naming the commit that
+introduced it:
+
+```
+| workload | commit | before -> after (barre/yoga, CI run ids) | reason | accepted by |
+|---|---|---|---|---|
+| `rn/feed50/rotate` | `abc1234` | 0.89x (`52d96baf8c`) -> 1.00x (`9122b937ed`) | relayout fix for yoga#NNNN, see docs/STATUS.md | name, 2026-MM-DD |
+```
+
+A row covers the commit's own comparison only: the next baseline is the run
+that includes it, so it does not need removing for the check to pass, and a
+ratchet entry the commit makes false is removed from
+`bench/expected-faster.txt` in the same commit.
+
+### Noise, and the thresholds
+
+`bench_compare.py` was run on the six CI runs on the `bench-results` branch
+(`.github/scripts/fixtures/`, trimmed copies; `test_bench_compare.py`
+prints these tables). The first four runs measured **identical barre code**
+(no change under `crates/`, `bench/` or `vendor/` between their commits), so
+comparing them is pure runner noise. Consecutive pairs with the defaults
+(REGRESSION > 30% and disjoint, WATCH > 10%):
+
+| pair | code | REGRESSION | WATCH | IMPROVED | non-micro geomean |
+|---|---|--:|--:|--:|--:|
+| `9bbc3b4aa9` -> `f47ea26fa8` | same | 0 | 1 | 2 | -0.4% |
+| `f47ea26fa8` -> `300ee03da5` | same | 0 | 1 | 0 | +0.9% |
+| `300ee03da5` -> `1854783423` | same | 0 | 1 | 1 | +0.2% |
+| `1854783423` -> `52d96baf8c` | changed | 1 (`micro/style_set_x20`) | 0 | 26 | -33.6% |
+| `52d96baf8c` -> `9122b937ed` | changed | 0 | 11 | 0 | +6.8% |
+
+Over all 12 ordered pairs among the four identical-code runs (420
+workload comparisons): 16 were worse by more than 10%, 2 by more than 20%,
+none by more than 30%; the largest was +24%. So on this sample:
+
+- **30% with disjoint intervals produced no false positive** and caught the
+  one real regression (the only REGRESSION in the five pairs). The margin
+  is not large (worst noise +24%), and the sample is small (four runs, six
+  independent pairs). Keep 30%/disjoint as the REGRESSION definition for
+  now, and re-check it on more same-code pairs before it gates (see below);
+  if any same-code pair shows a >30% disjoint flag, raise it to 40%.
+- **10% (WATCH) is noise-prone**: about one flag per run even with
+  identical code (1.3 per ordered pair, 16/12). That is why WATCH is
+  information and never part of the gate.
+- **The 5% non-micro geomean** moved at most 0.9% across the same-code
+  runs, so it is not noise-triggered; it flagged (+6.8%) the last pair,
+  which spans the barre-only relayout fixes (`calculate_layout.rs`,
+  `layout_results.rs`). Its eleven WATCH flags are mostly the `*.clean`
+  early-out workloads (~20 ns) and the relayout workloads (`rotate`, `resize`,
+  `text_same_size`), which is where docs/STATUS.md records a locally measured
+  cost for those fixes (rn/ geomean 0.52x -> 0.55x, `text_same_size` +11%,
+  `rotate` 0.91x -> 0.97x). So that pair is probably a true positive, not noise,
+  though a single CI pair cannot prove it.
+
+### Promotion plan
+
+1. **Now:** report-only, summary only. Look at it on every `main` push for a
+   few weeks; `bench-results` accumulates the history (one run per push to
+   `main`).
+2. **Before promoting:** (a) the workflow verified on a labelled PR and on a
+   `main` push; (b) at least 20 or so runs with no unexplained flag, in
+   particular same-code pairs to re-validate the 30%, 10% and 5% numbers (the
+   data above is six runs); (c) `bench/waivers.md` created and the waiver
+   lookup added to the script (a few lines); (d) decide how to avoid failing on a
+   single noisy run: a gate probably wants the same workload flagged in two
+   consecutive runs, or an automatic re-run, before it fails.
+3. **Promote:** pass `--enforce` in `bench.yml`, drop `continue-on-error` from
+   the compare step, and give the compare its own job name. Then
+   `[stack] required_checks` in `harness/orch.toml` (currently
+   `["conformance", "fmt, clippy, test"]`) would need that job's name added.
+   Two things block that as it stands: `bench.yml`'s job runs only on pushes
+   to `main` and on PRs labelled `bench`, and a required check that never
+   starts leaves the stacker waiting forever; so either the job runs on every
+   stacked PR (a macOS runner per layer, with a 60-minute timeout) or only layers touching `crates/` are required to
+   have it (the `stress_paths` / `stress_label` mechanism is the existing hook
+   for path-dependent extra CI), and the stacker would add the `bench` label.
+   `harness/` is the architect's to edit, not this change's.
+   Alternatively keep it a post-merge check on `main` that opens an issue, and
+   leave `required_checks` alone.
+
 ## Limitations
 
 - Engine overhead only: cheap measure funcs (see Methodology) and C-API

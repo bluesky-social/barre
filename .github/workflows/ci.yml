@@ -50,6 +50,12 @@ jobs:
       # Same flags as the orchestrator's clippy gate ([gate] in harness/orch.toml).
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The fixture tests of the report-only benchmark check
+      # (.github/scripts/bench_compare.py, docs/BENCH.md). continue-on-error:
+      # a broken script must not turn this required check red.
+      - name: bench_compare tests
+        continue-on-error: true
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
 
   # The check the stacker waits on. Yoga's gtest suite, unmodified, against
   # barre's C ABI (./conf, docs/CONFORMANCE.md), held to the PR head's

@@ -1,0 +1,4 @@
+Trimmed copies of bench-results/results/*.json from the bench-results branch
+(real GitHub-hosted macOS arm64 runs, 2026-10-17 and 2026-10-18): label, time,
+cpu, load and, per workload, median/p10/p90 of both engines. Only what
+bench_compare.py reads. Used by test_bench_compare.py.
