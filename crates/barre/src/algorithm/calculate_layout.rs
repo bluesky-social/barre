@@ -3188,6 +3188,7 @@ fn calculate_layout_impl<'a, N: LayoutNode<'a>>(
 /// `calculate_layout_impl` through the `measure_node_with_fixed_size` shortcut
 /// (a measure-only call whose two sizes are fixed), before any flex basis is
 /// computed. The same test on the same margins as there.
+#[inline(always)]
 fn is_fixed_size_measure<'a, N: LayoutNode<'a>>(
     node: N,
     available_width: f32,
@@ -3199,13 +3200,35 @@ fn is_fixed_size_measure<'a, N: LayoutNode<'a>>(
     perform_layout: bool,
 ) -> bool {
     // `is_fixed_size` is false for `MaxContent` whatever the size, so the
-    // margins are only needed past this test.
+    // margins are only needed past this test (inlined; the rest is not).
     if perform_layout
         || width_sizing_mode == SizingMode::MaxContent
         || height_sizing_mode == SizingMode::MaxContent
     {
         return false;
     }
+    is_fixed_size_with_margins(
+        node,
+        available_width,
+        available_height,
+        width_sizing_mode,
+        height_sizing_mode,
+        owner_direction,
+        owner_width,
+    )
+}
+
+/// The part of [`is_fixed_size_measure`] that needs margins.
+#[inline(never)]
+fn is_fixed_size_with_margins<'a, N: LayoutNode<'a>>(
+    node: N,
+    available_width: f32,
+    available_height: f32,
+    width_sizing_mode: SizingMode,
+    height_sizing_mode: SizingMode,
+    owner_direction: Direction,
+    owner_width: f32,
+) -> bool {
     // `is_fixed_size` is true for `StretchFit` whatever the size, so an
     // axis's margins (as `calculate_layout_impl` computes them) are only
     // computed for a `FitContent` axis. Same result as computing both, for
@@ -3265,6 +3288,18 @@ fn cached_entry(
     match cached {
         CachedResult::Layout => layout.cached_layout.get(),
         CachedResult::Measurement(i) => layout.cached_measurements[i].get(),
+    }
+}
+
+/// `node.layout_child_count() > 0`, without counting when the node has no
+/// `display: contents` child (then the layout children are its children).
+/// Same answer; inlined on the cache-hit path (perf, barre only).
+#[inline(always)]
+fn has_layout_children<'a, N: LayoutNode<'a>>(node: N) -> bool {
+    if node.has_contents_children() {
+        node.layout_child_count() > 0
+    } else {
+        node.child_count() > 0
     }
 }
 
@@ -3361,7 +3396,7 @@ pub fn calculate_layout_internal<'a, N: LayoutNode<'a>>(
     // defined inner main size. A `MaxContent` main axis is not enough: a
     // caller can pass a defined size with it, and that call keeps the bases
     // (found by the fuzzer, `slots-barre-only`).
-    let has_children = !node.has_measure_func() && node.layout_child_count() > 0;
+    let has_children = !node.has_measure_func() && has_layout_children(node);
     // Only read the stored anchor when the cheaper conditions do not already
     // start a new one; it is the anchor in effect only in that case.
     let stored = if layout.generation_count.get() != generation_count {

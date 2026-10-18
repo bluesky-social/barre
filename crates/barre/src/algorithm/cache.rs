@@ -261,6 +261,7 @@ fn new_size_is_stricter_and_still_valid(
 /// border and margin on both axes against the owner width (yoga#1626, and
 /// the measure function's adjusted available width, yoga#1784), and min/max
 /// width and height against the owner width and height (yoga#1003).
+#[inline(always)]
 fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
     node: N,
     direction: Direction,
@@ -269,13 +270,23 @@ fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
     owner_height: f32,
 ) -> bool {
     // Same owner size, or no percentage among the inputs: they resolve to
-    // the same values, so skip resolving them twice.
+    // the same values, so skip resolving them twice. This test is inlined
+    // into every lookup; the resolution is not (perf).
     let same = |a: f32, b: f32| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
-    if (same(entry.owner_width, owner_width) && same(entry.owner_height, owner_height))
+    (same(entry.owner_width, owner_width) && same(entry.owner_height, owner_height))
         || !node.style().has_owner_relative_box()
-    {
-        return true;
-    }
+        || owner_dependent_inputs_resolve_equal(node, direction, entry, owner_width, owner_height)
+}
+
+/// The resolving part of [`owner_dependent_inputs_match`], out of line.
+#[inline(never)]
+fn owner_dependent_inputs_resolve_equal<'a, N: LayoutNode<'a>>(
+    node: N,
+    direction: Direction,
+    entry: &CachedMeasurement,
+    owner_width: f32,
+    owner_height: f32,
+) -> bool {
     let style = node.style();
     let resolve = |ow: f32, oh: f32| {
         [
