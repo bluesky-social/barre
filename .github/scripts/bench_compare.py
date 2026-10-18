@@ -122,6 +122,12 @@ def classify(cur, base):
     return change, overlap, status
 
 
+def headline_counts(rows):
+    """(faster, total) over a read_run() result, micro/ excluded: the headline."""
+    ratios = [r.ratio for n, r in rows.items() if is_headline(n)]
+    return sum(verdict(x) == "faster" for x in ratios), len(ratios)
+
+
 def read_list(path):
     names = []
     for line in Path(path).read_text().splitlines():
