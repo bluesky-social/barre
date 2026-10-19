@@ -325,6 +325,7 @@ impl Edges {
 
     /// Fills `resolved`: [`resolve_edge`]'s fallback chain, evaluated once
     /// per shorthand rather than once per entry.
+    #[inline]
     fn resolve(&mut self) {
         let defined = |e: Edge| self.values[e as usize].is_defined();
         let pick = |e: Edge, fallback: Edge| if defined(e) { e } else { fallback };
