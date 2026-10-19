@@ -298,6 +298,12 @@ struct Built {
     return n;
   }
 
+  int sumCalls() {
+    int sum = 0;
+    for (auto& t : texts) sum += t.calls;
+    return sum;
+  }
+
   int resetCalls() {
     int m = 0;
     for (auto& t : texts) {
@@ -1177,6 +1183,8 @@ static void usage() {
           "  min FILE | --seed S --mode M [--scale S] [--out FILE] [knobs]\n"
           "                                     minimise one failing case\n"
           "  snippet FILE                       print a standalone C++ repro\n"
+          "  calls [--seeds A-B|N] [--modes 0,1,2] [--scale S] [knobs]\n"
+          "                                     measure callbacks per relayout step (no comparison)\n"
           "min/run --minimise also take --primary 0|S (scale a class-both case is minimised at)\n"
           "and --pass-on EXE (another fuzz build, e.g. against Yoga, must pass every candidate)\n"
           "min --nonfinite [--at-scale S]: minimise a NaN/infinite value in a fresh layout instead\n"
@@ -1869,6 +1877,40 @@ static int cmdRun(const Options& o) {
   return problems.empty() ? 0 : 1;
 }
 
+// `calls`: the measure callbacks of each case's relayout sequence (every size
+// step, no fresh layouts, nothing compared), one line per (seed, mode, scale):
+// `seed mode scale total c1,c2,...` (c_i: callbacks of the layout at step i).
+// fuzz.py's `calls-compare` lines up two engines' outputs. Report-only.
+static int cmdCalls(const Options& o) {
+  for (uint32_t seed = o.seedLo; seed <= o.seedHi; seed++) {
+    Case base = generate(seed, o.knobs);
+    for (int mode : o.modes) {
+      for (float scale : {0.0f, o.scale}) {
+        Case c = withScale(base, scale);
+        c.mode = mode;
+        YGConfigRef cfg = YGConfigNew();
+        YGConfigSetPointScaleFactor(cfg, c.scale);
+        YGConfigSetErrata(cfg, (YGErrata)c.errata);
+        std::string steps;
+        long total = 0;
+        {
+          Built tree(c.root, cfg);
+          for (size_t i = 0; i < c.sizes.size(); i++) {
+            layoutAt(tree.root, c.mode, c.sizes[i].first, c.sizes[i].second);
+            int n = tree.sumCalls();
+            tree.resetCalls();
+            total += n;
+            steps += (i ? "," : "") + std::to_string(n);
+          }
+        }
+        YGConfigFree(cfg);
+        printf("%u %d %s %ld %s\n", seed, mode, fmtNum(scale).c_str(), total, steps.c_str());
+      }
+    }
+  }
+  return 0;
+}
+
 int main(int argc, char** argv) {
   Options o;
   if (!parseArgs(argc, argv, o)) {
@@ -1880,6 +1922,7 @@ int main(int argc, char** argv) {
   if (o.cmd == "check") return cmdCheck(o);
   if (o.cmd == "min") return cmdMin(o);
   if (o.cmd == "snippet") return cmdSnippet(o);
+  if (o.cmd == "calls") return cmdCalls(o);
   usage();
   return 2;
 }

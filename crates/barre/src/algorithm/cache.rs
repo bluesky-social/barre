@@ -68,7 +68,9 @@ pub fn can_use_cached_measurement(
 /// differently at 140.6 than at 141), making the layout depend on history.
 /// barre's internal lookup compares them unrounded (as Yoga does with a
 /// point scale factor of 0), so a relayout matches a fresh layout. The
-/// exported [`can_use_cached_measurement`] keeps Yoga's tolerance.
+/// exported [`can_use_cached_measurement`] keeps Yoga's tolerance. Inlined
+/// into the lookup, where `config` is known to be `None` (perf).
+#[inline(always)]
 pub fn can_use_cached_measurement_exact(
     width_mode: SizingMode,
     available_width: f32,
@@ -102,6 +104,7 @@ pub fn can_use_cached_measurement_exact(
 
 /// `canUseCachedMeasurement`'s body. `config` is `None` for the exact
 /// comparison, which takes Yoga's `config == nullptr` branch (no rounding).
+#[inline(always)]
 fn can_use_cached_measurement_impl(
     width_mode: SizingMode,
     available_width: f32,
@@ -261,6 +264,7 @@ fn new_size_is_stricter_and_still_valid(
 /// border and margin on both axes against the owner width (yoga#1626, and
 /// the measure function's adjusted available width, yoga#1784), and min/max
 /// width and height against the owner width and height (yoga#1003).
+#[inline(always)]
 fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
     node: N,
     direction: Direction,
@@ -269,13 +273,31 @@ fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
     owner_height: f32,
 ) -> bool {
     // Same owner size, or no percentage among the inputs: they resolve to
-    // the same values, so skip resolving them twice.
+    // the same values, so skip resolving them twice. This test is inlined
+    // into every lookup; the resolution is not (perf).
     let same = |a: f32, b: f32| a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan());
-    if (same(entry.owner_width, owner_width) && same(entry.owner_height, owner_height))
+    (same(entry.owner_width, owner_width) && same(entry.owner_height, owner_height))
         || !node.style().has_owner_relative_box()
-    {
-        return true;
-    }
+        || owner_dependent_inputs_resolve_equal(
+            node,
+            direction,
+            entry.owner_width,
+            entry.owner_height,
+            owner_width,
+            owner_height,
+        )
+}
+
+/// The resolving part of [`owner_dependent_inputs_match`], out of line.
+#[inline(never)]
+fn owner_dependent_inputs_resolve_equal<'a, N: LayoutNode<'a>>(
+    node: N,
+    direction: Direction,
+    entry_owner_width: f32,
+    entry_owner_height: f32,
+    owner_width: f32,
+    owner_height: f32,
+) -> bool {
     let style = node.style();
     let resolve = |ow: f32, oh: f32| {
         [
@@ -289,7 +311,7 @@ fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
             style.resolved_max_dimension(direction, Dimension::Height, oh, ow),
         ]
     };
-    let stored = resolve(entry.owner_width, entry.owner_height);
+    let stored = resolve(entry_owner_width, entry_owner_height);
     let current = resolve(owner_width, owner_height);
     stored
         .iter()
@@ -299,7 +321,8 @@ fn owner_dependent_inputs_match<'a, N: LayoutNode<'a>>(
 
 /// `calculateLayoutInternal` (the cache lookup): the entry of `node`'s layout
 /// cache (for `perform_layout`) or measurement cache whose results can be
-/// reused for these constraints, if any.
+/// reused for these constraints, if any, with that entry as read (so the
+/// caller does not read it again).
 ///
 /// Deliberately differs from Yoga in two ways. Each entry must also match
 /// on the node's own owner-relative inputs ([`owner_dependent_inputs_match`],
@@ -318,7 +341,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
     owner_width: f32,
     owner_height: f32,
     perform_layout: bool,
-) -> Option<CachedResult> {
+) -> Option<(CachedResult, CachedMeasurement)> {
     let layout = node.layout();
     let owner_key_matches = |entry: &CachedMeasurement| {
         owner_dependent_inputs_match(node, owner_direction, entry, owner_width, owner_height)
@@ -357,7 +380,7 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
             margin_axis_column,
         ) && owner_key_matches(&cached_layout)
         {
-            return Some(CachedResult::Layout);
+            return Some((CachedResult::Layout, cached_layout));
         }
 
         // Try to use the measurement cache.
@@ -378,32 +401,33 @@ pub fn find_cached_result<'a, N: LayoutNode<'a>>(
                 margin_axis_column,
             ) && owner_key_matches(&entry)
             {
-                return Some(CachedResult::Measurement(i));
+                return Some((CachedResult::Measurement(i), entry));
             }
         }
         None
     } else if perform_layout {
         let cached_layout = layout.cached_layout.get();
-        if inexact_equals(cached_layout.available_width, available_width)
-            && inexact_equals(cached_layout.available_height, available_height)
-            && cached_layout.width_sizing_mode == width_sizing_mode
+        // The sizing modes are compared first (cheaper; the same answer).
+        if cached_layout.width_sizing_mode == width_sizing_mode
             && cached_layout.height_sizing_mode == height_sizing_mode
+            && inexact_equals(cached_layout.available_width, available_width)
+            && inexact_equals(cached_layout.available_height, available_height)
             && owner_key_matches(&cached_layout)
         {
-            Some(CachedResult::Layout)
+            Some((CachedResult::Layout, cached_layout))
         } else {
             None
         }
     } else {
         for i in 0..layout.next_cached_measurements_index.get() as usize {
             let entry = layout.cached_measurements[i].get();
-            if inexact_equals(entry.available_width, available_width)
-                && inexact_equals(entry.available_height, available_height)
-                && entry.width_sizing_mode == width_sizing_mode
+            if entry.width_sizing_mode == width_sizing_mode
                 && entry.height_sizing_mode == height_sizing_mode
+                && inexact_equals(entry.available_width, available_width)
+                && inexact_equals(entry.available_height, available_height)
                 && owner_key_matches(&entry)
             {
-                return Some(CachedResult::Measurement(i));
+                return Some((CachedResult::Measurement(i), entry));
             }
         }
         None

@@ -117,6 +117,7 @@ only shows in `micro/` (getters ~1.8×). It is irrelevant to the RN plan
 | | `rotate` | surface toggles 390×844 ↔ 844×390 |
 | | `resize` | width steps through 40 values (window drag): more distinct constraints than the 8-entry measure cache |
 | | `insert_remove` | cell 25 alternately removed / reinserted |
+| `rn/fabric50/` | `commit` | Fabric's commit pattern (no tree is mutated in place): 50 posts in a scroll view, every node with its own config carrying the clone callback. Before each layout a commit clones the root-to-leaf path (`YGNodeClone`, a new config, `YGNodeSwapChild`) and edits one text, in turn: a timestamp 0.04 pt wider or narrower next to a name and handle that shrink to fit (fractional glyph advances), a post text 120 ↔ 200 glyphs, a like count 1 ↔ 2 glyphs; `YGNodeMarkDirty` on it. Layout clones the path's other children through the callback. Widths on the 1/3-pt grid (`flex: 1` texts sharing a row, a 31/3 padding) and off it (a 12.1 padding); a `flex: 1` wrapper in an auto-height column. Replaced nodes are freed once nothing reachable names them as owner |
 | `rn/` | `deep{5,10,15,20}/fresh`, `deep20/clean` | nested views alternating row/column, each level with a shrinkable text sibling |
 | | `wide_column1000/fresh` | settings-style list, 1000 rows × (icon, flex text, chevron) |
 | | `wide_row200/fresh` | 200 shrinking/growing texts on one line |
@@ -166,6 +167,102 @@ T-0006) it was 178 µs (0.68×), on top of `0e42d3c` (after) 323 µs. Measure
 calls and new-layout nodes are unchanged, so it is extra relayout work in
 T-0006's flex-basis anchor path; worth a look by whoever owns it.
 
+**Update (branch `perf-fixcost`, 2026-10-18).** Stack layer #17
+(`fix-barre-only-relayout`, five relayout == fresh fixes) cost `rn/` 0.52× →
+0.55×, `clean` 12 → 16 ns, `rotate` 233 → 247 µs. Profiling showed little of
+it was the fixes' logic: it was calls, stores and child scans on the cache-hit
+path. Exact changes (bench checksums, measure counts and new-layout counts
+unchanged; `./conf` 852/2 with 0 regressions, `./conf --engine rn-barre`
+identical to stack; `./fuzz` failure lists byte-identical to stack at default,
+`--wide`, `--steps 20` and `--siblings 10 --depth 6 --kids 3 --steps 20
+--wide`), measured `--rev` stack vs each commit, interleaved, two full runs each:
+
+| commit | change | effect (two runs, vs the commit before) |
+|---|---|---|
+| `e4645cd` | fixed-size test computes margins only on a `FitContent` axis; the single flex child found once, not twice | geomean 0.550 → 0.547 |
+| `de9f89a` | hit and run paths of `calculate_layout_internal` out of line | **reverted** (`83cd493`): clean 16 → 19.6 ns, geomean 0.567 |
+| `8774f14` | `singleFlexChild` zero-basis write of an earlier-layout hit deferred to the node's next run in the layout (none for a node that only hits) | `text_same_size` 11.7 → 11.4 µs, `text_change` −1.5%, rest neutral |
+| `64b7054` | inline cheap tests on the hit path: owner-size bit test (resolution out of line), has-children without counting (no `display: contents` child), fixed-size guards (margins out of line) | clean 16.0 → 13.3 ns, `text_same_size` −5%, `rotate` 247 → 239 µs, geomean 0.549 → 0.528 |
+| `32c08b1` | exact measurement-cache test inlined, sizing modes compared first | fresh −2…−4%, `rotate` 235 µs, geomean 0.518 |
+| `143e81a` | `Node::set_dirty` inlined; slow owner-key test takes the entry's owner sizes by value | clean 13.2 ns, `text_same_size` 10.6 µs, geomean 0.511 |
+| `32979b3` | restamp writes only the five stamp fields (`CachedMeasurement::restamp`) instead of `Cell::set` of the whole 40-byte entry | **clean 13.2 → 11.5 ns**, `rotate` 230 → 228 µs, geomean 0.503 |
+| `b926df9` | `find_cached_result` returns the entry it matched (read once) | neutral (kept: simpler) |
+| `d2de75a`, `9e6cf5d`, `e12c2e2` | anchor flags written field by field; iterator end without dropping the backtrack `Vec`; rejection's child scan `#[inline(never)]` | neutral or clean +0.3–0.6 ns: **reverted** (`debd57e`, `d2c515a`, `96b5467`) |
+
+Result (`debd57e`, same tree as `b926df9`), vs stack `171ce36`, full
+`bench/run`, two runs each: `clean` 16.2 → 11.4–11.8 ns (pre-#17 12.2);
+`text_same_size` 11.8–11.9 → 10.4–10.5 µs (pre-#17 10.6); `text_change`
+20.4–20.5 → 19.1–19.2 µs (pre-#17 19.1); `insert_remove` 16.0 → 14.9–15.0 µs
+(pre-#17 15.0); `rotate` 249–250 µs (0.97×) → 230 µs (0.88–0.89×; pre-#17
+0.91×); `rn/` geomean 0.549 → 0.500 (pre-#17 0.516); every layout workload
+(`yoga/`, `capture/`, `rn/`) faster; all `*.clean` 16 → 11.5 ns. `micro/`
+(C-API calls, no layout) moves 1–3% either way (code layout:
+`insert_remove_child` 23.6 → 24.2 ns already at `32c08b1`).
+
+The deferred write (`8774f14`) relies on one assumption, stated at the code:
+only the node's own runs read or rewrite its children's flex bases, and a
+basis with an earlier generation is rewritten before it is read, so moving the
+write from the hit to the start of the node's next run changes nothing, unless
+something marks the child dirty (which resets its basis) from inside the
+layout, e.g. a measure function calling `YGNodeMarkDirty` on another node.
+
+`rotate` is still above 0.85×: what remains of the gap is T-0006's replays
+(434 measure-only runs per layout, against 473 real ones; Layout calls per
+node, item 3), and there is no cheap exact test for when a replay is a no-op
+(idea 1). The rest of the profile is Yoga-structured work and style lookups
+(`resolved_max_dimension`, `compute_margin`; idea 3).
+
+**Style setters vs the axis sums (branch `perf-fused-refresh`,
+2026-10-19).** `6806010` precomputes the per-axis margin and padding+border
+sums (`Style::margin_axis_sum`, `padding_border_axis_sum`; ~20% off `rn/`
+layouts) but refreshed all eight in every `set_margin`/`set_padding`/
+`set_border` through the generic per-edge functions, ~20 ns per edge
+setter: `micro/style_set_x20` 1.07× → 3.7× Yoga, `build_feed50_tree` 1.19×
+→ 1.28×. The sums stay eager (computed in the setter, so a layout pays
+nothing for them), but the setter now does only what the edge it set can
+change, in straight-line code. Commits, each measured `--rev` against the
+one before (`micro/`, interleaved, two runs):
+
+| commit | change | `style_set_x20` |
+|---|---|---|
+| `4afb7dd` | refresh only the set property's group (margin: 2 sums; padding/border: 4, the column one shared by the three directions), written out per axis | 194 → 95 ns |
+| `d651c40` | refresh only the axes the set edge maps to (left/right/start/end/horizontal: row; top/bottom/vertical: column; all: both); terms without the unit dispatch (`point_or_zero`: a stored point value is finite, a percentage counts as 0 because the sums are not read while one is set, and the setter that replaces it refreshes its axes); the row sum computed once when the three directions resolve the same edges | 95 → 69 ns |
+| `5020ee2` | one pass over an `Edges`' units for its undefined and percent bits; the min/max percent bit without an iterator chain | 69 → 68 ns |
+| `79bd80c` | `Edges::resolve` inlined into the setters | 68 → 66 ns |
+
+A calibration build with no refresh at all (not landable) measured 56 ns.
+Layout code is unchanged (the read side of the sums is untouched; every
+debug build checks each refreshed sum against the per-edge functions, which
+`./conf` and `./fuzz --debug` run). Result, `79bd80c` vs stack `9451558`,
+eight interleaved pairs (three full `bench/run`, five `rn/` + `micro/` runs,
+two of them with the order reversed), medians of the pairs' medians:
+
+| workload | stack | `79bd80c` | barre ns | barre/yoga |
+|---|---|---|---|---|
+| `micro/style_set_x20` | 198 ns (3.82×) | 66 ns (1.27×) | −67% | |
+| `micro/build_feed50_tree` | 166 µs (1.28×) | 154 µs (1.19×) | −7% | |
+| `rn/wide_row200/fresh` | 24.1 µs | 24.2 µs | +0.5% | 0.480 → 0.483 |
+| `rn/absolute100/fresh` | 128.0 µs | 127.4 µs | −0.3% | 0.510 → 0.505 |
+| `rn/feed50/fresh` | 690 µs | 692 µs | +0.4% | 0.439 → 0.441 |
+| `rn/deep20/fresh` (worst `fresh`) | 11.26 ms | 11.36 ms | +0.6% | 0.430 → 0.432 |
+| `rn/` geomean (19 rows) | | | +0.13% | 0.5019 → 0.5016 |
+
+Every `rn/` row is within ±1% (`rotate` +1.0% ns, +0.6% ratio), i.e. noise:
+barre's checksums, measure counts and new-layout counts are identical to
+stack, `./conf` 852/854 with 0 regressions, `./conf --engine rn-barre`
+identical to stack, `./fuzz run --seeds 10000` unchanged (2290 of 30000;
+545/1632/113). `barre-rn` snapshots styles through the same setters inside
+its layouts, so it gets the setter speedup there too.
+
+Tried before this (branch `perf-setters`, `ec44710`, not landed): setters
+only mark the sums stale and `YGNodeCalculateLayout` refreshes them in a
+walk over the flagged nodes. `style_set_x20` 1.15×, but each fresh layout
+paid ~5 ns per styled node: `rn/` geomean +1.1%, `wide_row200/fresh` +5.7%,
+`absolute100/fresh` +2.2%. Refreshing lazily on the algorithm's first visit
+(sums in `LayoutResults` cells, NaN as "stale") was considered and not
+built: it moves the same work into the timed layout, only fused, and the
+per-axis setter above already costs less than that walk.
+
 Perf commits (each `./conf` clean, checksums unchanged; numbers are
 `--quick` A/B against the previous commit):
 
@@ -184,12 +281,22 @@ Perf commits (each `./conf` clean, checksums unchanged; numbers are
    only on node creation (`node_new_free` 1.5×, tree building 1.16×),
    cross-language getters (not RN-relevant) and `rn/feed50/rotate` since
    T-0006 (1.14×, see Results). Before the perf work it was 0.84–0.95×.
-2. **Cache behaviour is identical.** Measure-call counts and `hasNewLayout`
-   sets match Yoga on every workload, including all five relayout
-   scenarios. The measure cache does its job: one text change costs one
-   measure call and relays out 63 nodes; rotating back and forth costs zero
-   measure calls (both sizes stay in the 8-entry cache), while a window drag
-   (`resize`) re-measures ~136 texts per layout.
+2. **Cache behaviour is Yoga's, except where barre's measure-leaf cache
+   compares exactly.** `hasNewLayout` sets match Yoga on every workload.
+   Measure-call counts match on every workload except three, where barre
+   makes more: `rn/deep15/fresh` 4382 vs 4356 (+0.6%), `rn/deep20/fresh`
+   66 937 vs 66 064 (+1.3%), `rn/feed50/resize` 148, 148, 148, 144 vs 148,
+   136, 139, 135 in the check phase (299.1 vs 292.1 per layout over 80
+   steps, +2.4%), plus `rn/fabric50/commit` (1.25 vs 1.01 per commit over
+   its first 80 commits). All of it is the yoga#1784 decision (barre's
+   lookup compares a measure-function leaf's available sizes exactly, Yoga
+   rounds them to the pixel grid first): with Yoga's comparison, every count
+   is Yoga's ("Measure calls against Yoga" below). The `rn-barre` arm's
+   counts are `barre`'s on every workload. Otherwise the measure cache does
+   its job: one text change costs one measure call and relays out 63 nodes;
+   rotating back and forth costs zero measure calls (both sizes stay in the
+   8-entry cache), while a window drag (`resize`) re-measures ~140 texts
+   per layout.
 3. **Checksum mismatches are FMA contraction, not bugs.** `rn/deep10` and
    `rn/deep20` differ by exactly one 1/3-pt pixel on 1–6 text leaves. With
    Yoga built `-ffp-contract=off`, every checksum of every workload matches. Clang contracts
@@ -324,6 +431,117 @@ Steady state (4th layout), at `371c971`:
    not. See idea 1 for why they can't simply be skipped.
 4. Same-generation cache hits are 50–60% of all calls and cost ~1% (lookup
    only); `HitEarlierGen` dominates relayouts (`text_change`: 329 of 414).
+
+## Measure calls against Yoga (attribution, 2026-10-18)
+
+On the iOS simulator (social-app, RN 0.88, the same binary with the layout
+switch off and on, an `rn-shim` build from before the barre-only relayout
+fixes) barre made ~30% more text-measure callbacks than Yoga in a scripted
+~35 s scenario (Yoga 418, barre 554; equal cost per call; the busiest pass
+44-45 vs 54-55 calls; cold start about equal; geometry equal at every
+checkpoint). Where that comes from was attributed on the host by ablation:
+branch `measure-ablation` (experimental, not for landing) adds switches,
+compiled in only with `RUSTFLAGS=--cfg=barre_ablate` and chosen at run time
+with `$BARRE_ABLATE`, that turn barre-only machinery off or back to Yoga's
+behaviour: `d5` (T-0006's refusal of an earlier layout's entry computed under
+another anchor), `replay` (T-0006's anchor replays), `sfc` (the
+`singleFlexChild` write at a hit), `round` (Yoga's pixel-grid-tolerant
+`canUseCachedMeasurement` for measure-function leaves, i.e. the yoga#1784
+decision reverted), `owner` (T-0010's owner-size key), `d1` (keep an earlier
+layout's flex basis in the resolved-basis branch, Yoga without
+`WebFlexBasis`). Counts are deterministic: measure callbacks per layout in
+the check phase, and the mean over 80 more layouts (`resize`: two full
+40-width cycles). `barre` and `rn-barre` gave the same counts in every
+variant, as did `yoga` and `rn-yoga`.
+
+| workload | Yoga | barre (`stack` 2800e38) | (a) `d5`+`replay` | (b) `round` | (c) (a)+(b) | `d1` | `owner` | all six |
+|---|---|---|---|---|---|---|---|---|
+| `rn/feed50/resize`, check | 148, 136, 139, 135 | 148, 148, 148, 144 | = barre | = Yoga | = Yoga | = barre | = barre | = Yoga |
+| `rn/feed50/resize`, mean of 80 | 292.06 | 299.05 | 299.05 | 292.06 | 292.06 | 299.05 | 299.05 | 292.06 |
+| `rn/deep15/fresh` | 4356 | 4382 | 4382 | 4356 | 4356 | 4382 | 4382 | 4356 |
+| `rn/deep20/fresh` | 66 064 | 66 937 | 66 937 | 66 064 | 66 064 | 66 937 | 66 937 | 66 064 |
+| `rn/fabric50/commit`, check | 1, 1, 1, 1 | 1, 1, 3, 1 | 150, 1, 3, 2 | 1, 1, 1, 1 | 150, 1, 1, 2 | = barre | = barre | 1, 1, 1, 1 |
+| `rn/fabric50/commit`, mean of 80 | 1.01 | 1.25 | 1.57 | 1.01 | 1.34 | 1.25 | 1.25 | 1.01 |
+
+Controls, equal to Yoga in every variant: `rn/feed50/{fresh,rotate,text_change}`
+(548; 494 then 0; 1), `rn/deep10/fresh` (160), `rn/wide_row200/fresh` (400),
+`capture/feed-android` (57), `capture/chat-mac` (162). Over 400 commits
+`rn/fabric50/commit` is 1.07 (barre) vs 1.00 (Yoga, and barre with `round`):
+once a timestamp toggles back, the measurement at its earlier width is still
+in the cache.
+
+So **on RN-shaped trees the whole excess is the exact measure-leaf
+comparison** (hypothesis 2), and T-0006's refusal and replays (hypothesis 1),
+T-0010's owner key and the flex-basis rewrite contribute nothing. (Variant
+(a) is worse on the clone workload: without replays, `d1`'s rewritten bases
+are no longer recomputed the way a fresh layout does, and the first commit
+re-measures 150 texts.) It shows in two forms:
+
+- **Within one layout** (`deep15`, `deep20`, fresh trees): a leaf is asked
+  for widths that differ by less than a pixel in one pass; Yoga's tolerance
+  answers from the first, barre measures again. In these trees the layout is
+  the same either way.
+- **Across layouts** (`resize`, `fabric50/commit`): a leaf is asked for a
+  width less than a pixel from one it was measured at in an earlier layout.
+  This is yoga#1784's mechanism, and Yoga's reuse changes the result:
+  `resize` with `round` has Yoga's checksum, not barre's (27 nodes, the
+  meta-row texts, 1/3 pt apart); in `fabric50` the timestamp of the edited
+  cell ends 1/3 pt to the left in barre. With Yoga built
+  `-ffp-contract=off` those are the only differences, and `round` gives
+  Yoga's checksum on both. (With RN's default contraction one more
+  timestamp in `fabric50` is 1/3 pt apart from the first layout on:
+  finding 3's FMA difference. The bench reports it as a mismatch.) The clone
+  workload's sub-pixel timestamp edit is what reproduces the device's excess:
+  real glyph advances are fractional, so editing one text (a timestamp, a
+  count) moves the available width of a shrinking neighbour by a fraction of
+  a pixel, and only barre re-measures it. Without that edit (an earlier
+  version that edited only the post text and like count) all engines made
+  exactly one call per commit.
+
+On the fuzzer's random trees (`./fuzz calls`, docs/FUZZ.md: callbacks of the
+relayout sequence, summed; seeds 1-2000, modes 0-2, scales 0 and 1) the
+picture differs, because those trees are full of percentage bases relaid out
+at very different root sizes:
+
+| variant | callbacks | vs Yoga | `./fuzz run` failing pairs (10 000 seeds) |
+|---|---|---|---|
+| Yoga | 158 899 | | 19 315 (64.4%) |
+| barre | 174 602 | +9.9% | 2290 (7.6%) |
+| `round` | 171 768 | +8.1% | 7609 (25.4%) |
+| `d5` | 174 250 | +9.7% | 2730 (9.1%) |
+| `d5`+`replay` | 177 808 | +11.9% | 11 717 (39.1%) |
+| `d1` | 161 254 | +1.5% | 17 025 (56.8%) |
+| `d1`+`round` | 159 058 | +0.1% | 18 311 (61.0%) |
+| `d1`+`d5`+`replay`+`round` | 158 787 | -0.1% | |
+
+`owner` and `sfc` change nothing there. With `--steps 20`, `--wide` and
+`--siblings 6 --measure 100 --steps 12` (1000 seeds) the shares are the same:
+`d1` takes barre from +14.9 / +9.3 / +10.6% to +2.8 / +2.0 / +1.4%. There the
+excess is mostly yoga#1552 (a stale percent or content basis that Yoga keeps
+and barre rewrites), and Yoga's lower count comes with layouts that differ
+from fresh ones: every variant that gets closer to Yoga's count fails the
+fuzzer far more often.
+
+**A narrower rule was tried and rejected.** Branch `measure-round-samegen`
+(prototype, not for landing): the pixel-grid tolerance only against an entry
+stored in the same layout, exact against an earlier layout's. It recovers the
+within-layout form (`deep15` 4356, `deep20` 66 064; every other count
+unchanged, `resize` and `fabric50/commit` included) and keeps `./conf` at 852
+pass / 2 expected fail with no regressions, but the fuzzer gets worse:
+failing pairs 2290 → 2318 (default knobs), 2875 → 2897 (`--wide`), 3950 → 3990
+(`--steps 20`), barre-only 14 → 17, 22 → 22, 14 → 17 (the minimised cases in
+`fuzzer/cases/` are unchanged). Presumably because in a relayout a
+cross-layout hit higher up can skip the call that measured the leaf first in
+a fresh layout, so even a same-layout tolerance depends on history (not
+traced). By the
+correctness bar that is not acceptable. The cross-layout form, which is the
+one the device shows, has no exact counterpart: whether a measurement at
+140.6 pt can stand for 141 pt depends on the measure function.
+
+Not reproducible on the host: whether the device's commits are of this kind
+(timestamps, counts, `onLayout`-driven re-renders) and how many layouts per
+second Fabric runs; hypothesis 3 (more commits from layout feedback) needs
+the device.
 
 ## Optimisation ideas, ranked by expected impact
 

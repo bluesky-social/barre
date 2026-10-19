@@ -70,20 +70,18 @@ whatever it picks up.
      Yoga's own arithmetic is a small slice of a scrolling session.
 2. **Perf toward 0.5× Yoga's time** (`docs/BENCH.md` has the ranked ideas and
    calls-per-node findings):
-   - The rest of the rotate regression (T-0006's replays).
-   - **Claw back the cost of the barre-only relayout fixes** (stack layer
-     "fix-barre-only-relayout"). Measured 2026-10-18 with `bench/run --rev
-     REV rn/` (REV = the stack top before vs after; two runs each, within
-     about 1% of each other): rn/ geomean 0.52× → 0.55×, and on `rn/feed50`
-     `clean` 12 → 16 ns, `text_same_size` 10.6 → 11.8 µs (+11%), `rotate`
-     233 → 247 µs (0.91× → 0.97×), `text_change` +7%, `insert_remove` +6%;
-     fresh layouts +1–3%. Per commit, no single culprit: 0a99eec costs
-     nothing, then restamp on hit (074d3df) +2 ns on `clean` and about +5 µs
-     on `rotate`, baseline invalidation (2135442) about +4 µs, the
-     single-flex-child write (1fb7b09) about +7 µs, the fixed-size check
-     (b5fab9e) +2 ns on `clean`. It was accepted because correctness comes
-     first. Look for the same checks done on colder paths, or merged into
-     the existing lookups.
+   - **The cost of the barre-only relayout fixes is clawed back** (branch
+     `perf-fixcost`, docs/BENCH.md "Update (branch `perf-fixcost`)"): all
+     exact, conf/fuzz/rn-barre identical to stack. Against stack `171ce36`
+     (two full runs each): `rn/` geomean 0.549 → 0.500 (pre-#17 0.516),
+     `clean` 16 → 11.5 ns, `text_same_size` 11.8 → 10.4 µs, `text_change`
+     20.4 → 19.1 µs, `insert_remove` 16.0 → 14.9 µs, `rotate` 0.97× → 0.88×,
+     every layout workload faster. The costs were calls, full-entry stores
+     and child scans on the cache-hit path, not the fixes' logic. One
+     assumption: the deferred `singleFlexChild` write (`8774f14`) needs that
+     nothing marks a node dirty from inside a layout.
+   - `rotate` is at 0.88× Yoga, not 0.85×; the rest is T-0006's replays,
+     which have no cheap exact skip test (idea 1).
    - Fewer edge lookups.
    - A hot/cold split of node data, and a compact `Style`, which also
      shrinks the RN blob.
@@ -141,6 +139,31 @@ waiver format and the promotion plan: docs/BENCH.md, "Regression check and the
 faster-than-Yoga metric". Open: after a few weeks of history, decide whether to
 promote it (`--enforce`, `required_checks` in `harness/orch.toml`, which this
 change did not touch).
+
+## Measure-call attribution (2026-10-18)
+
+Why barre made ~30% more text-measure callbacks than Yoga on the simulator,
+attributed on the host by ablation (docs/BENCH.md, "Measure calls against
+Yoga"). On every RN-shaped bench workload, `rn-barre` included, the whole
+excess is the yoga#1784 decision: barre's lookup compares a measure-function
+leaf's available sizes exactly, Yoga rounds them to the pixel grid. With
+Yoga's comparison every count equals Yoga's; T-0006's refusal and replays,
+T-0010's owner key and the flex-basis rewrite add nothing there. A new
+workload, `rn/fabric50/commit` (Fabric's clone-the-path commits), reproduces
+it once one edit changes a text's width by a fraction of a point (fractional
+glyph advances): a shrinking neighbour's available width moves by less than a
+pixel and only barre measures it again (1.25 vs 1.01 calls per commit over 80
+commits, 1.07 vs 1.00 over 400). That reuse is yoga#1784's mechanism, and the
+layouts differ (by 1/3 pt on one node). On the fuzzer's random trees most of
+the excess is instead the yoga#1552 basis rewrite, where Yoga's layouts are
+wrong. A narrower rule (tolerance against same-layout entries only, branch
+`measure-round-samegen`) recovers only the within-layout form and makes the
+fuzzer worse (2290 → 2318 failing pairs, barre-only 14 → 17), so it was
+dropped. **Open decision:** accept the extra calls as the price of yoga#1784,
+or give measure-function leaves Yoga's tolerance back (Yoga's counts; fuzzer
+failing pairs 7.6% → 25.4%). `./fuzz calls` / `calls-compare` compare two
+engines' callback counts. Not verified on the device: that its commits are of
+this kind.
 
 ## Open questions for Samuel
 

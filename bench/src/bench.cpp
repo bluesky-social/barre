@@ -9,6 +9,7 @@
 // measure-func call counts). bench/run drives it.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -826,6 +827,268 @@ struct FeedRelayout : Workload {
   YGNodeRef root() override { return f.t->root; }
 };
 
+// --- Fabric's commit pattern -------------------------------------------------
+//
+// React Native's Fabric never mutates a committed tree. A commit clones the
+// path from the root to the changed node: YogaLayoutableShadowNode's clone
+// constructor copy-constructs the yoga::Node (layout results and measure cache
+// included), gives it a new yoga::Config with the same settings and the clone
+// callback, and swaps the cloned child in. Layout then clones every child of a
+// node it lays out whose owner is not that node, through the clone callback
+// (Node::cloneChildrenIfNeeded -> yogaNodeCloneCallbackConnector), which does
+// the same. So a node's cache entries come from an earlier commit's layout of
+// *another* node object, and a detector of repeated (node, constraint) pairs
+// within one pass cannot see re-measurement across commits.
+//
+// The tree: a scroll view of `cells` posts with `flex: 1` columns (one inside
+// an auto-height column, the T-0006 shape), three `flex: 1` texts sharing a
+// row, text in a card with sub-pixel padding, and a 1/3-pt left padding, so
+// text leaves get available widths on the 1/3-pt grid and off it. Each commit
+// edits one leaf, in turn: a timestamp whose width changes by 0.04 pt (real
+// glyph advances are fractional: "1m" -> "2m"), next to a name and a handle
+// that shrink to fit the row, so their available widths move by a fraction of
+// a pixel; a post text toggling between 120 and 200 glyphs (its line count
+// changes); a like count toggling between 1 and 2 glyphs. The edited cell
+// moves on every three commits. The edited leaf gets YGNodeMarkDirty, which
+// dirties the cloned path. (Fabric calls yoga::Node::setDirty on each cloned
+// node instead, which does not reset `computedFlexBasis`; the C API has no
+// equivalent.)
+//
+// Replaced nodes are freed after each layout once no reachable node names them
+// as its owner, so a freed node's address is never mistaken for a live owner
+// by cloneChildrenIfNeeded.
+struct FabricCommit;
+static FabricCommit* gFabric = nullptr;
+static YGNodeRef fabricCloneNode(YGNodeConstRef old, YGNodeConstRef, size_t);
+
+struct FabricCommit : Workload {
+  int cells;
+  std::unique_ptr<Tree> t; // keeps the Text records alive
+  YGNodeRef r = nullptr;
+  std::vector<YGNodeRef> live; // every node not yet freed
+  std::map<YGNodeRef, YGConfigRef> configOf;
+  std::vector<std::array<std::vector<size_t>, 3>> paths; // per cell, per edit
+  std::deque<Text> alt; // the second Text of every edited leaf
+  std::map<const Text*, Text*> other;
+  uint64_t n = 0;
+  explicit FabricCommit(int c) : cells(c) { rn = true; }
+
+  static YGConfigRef newConfig() {
+    YGConfigRef c = YGConfigNew();
+    YGConfigSetPointScaleFactor(c, 3.0f);
+    YGConfigSetErrata(c, static_cast<YGErrata>(1 | 2 | 4 | 8));
+    YGConfigSetCloneNodeFunc(c, fabricCloneNode);
+    return c;
+  }
+  void adopt(YGNodeRef x) {
+    YGConfigRef c = newConfig();
+    YGNodeSetConfig(x, c);
+    live.push_back(x);
+    configOf[x] = c;
+  }
+  YGNodeRef cloneWithConfig(YGNodeConstRef old) {
+    YGNodeRef c = YGNodeClone(old);
+    adopt(c);
+    return c;
+  }
+  static std::vector<size_t> pathTo(YGNodeRef leaf) {
+    std::vector<size_t> p;
+    for (YGNodeRef x = leaf; YGNodeGetOwner(x) != nullptr;
+         x = YGNodeGetOwner(x)) {
+      YGNodeRef o = YGNodeGetOwner(x);
+      size_t i = 0;
+      while (YGNodeGetChild(o, i) != x) {
+        i++;
+      }
+      p.insert(p.begin(), i);
+    }
+    return p;
+  }
+  void addAlt(YGNodeRef leaf, float chars, float charW) {
+    Text* a = static_cast<Text*>(YGNodeGetContext(leaf));
+    alt.push_back(Text{chars, charW, a->lineH});
+    other[a] = &alt.back();
+    other[&alt.back()] = a;
+  }
+
+  // Returns the edited leaves: {timestamp, post text, like count}.
+  std::array<YGNodeRef, 3> buildCell(Tree& tr, YGNodeRef parent, int i) {
+    Rng rng(static_cast<uint64_t>(i) + 101);
+    YGNodeRef wrapper = tr.node(parent);
+    YGNodeRef post = tr.node(wrapper);
+    row(post);
+    YGNodeStyleSetPadding(post, YGEdgeLeft, 31.0f / 3.0f);
+    YGNodeStyleSetPadding(post, YGEdgeRight, 15);
+    YGNodeStyleSetPadding(post, YGEdgeTop, 8);
+    YGNodeStyleSetGap(post, YGGutterColumn, 10);
+    tr.box(post, 42, 42);
+    YGNodeRef content = tr.node(post);
+    YGNodeStyleSetFlex(content, 1);
+
+    YGNodeRef meta = tr.node(content);
+    row(meta);
+    YGNodeStyleSetAlignItems(meta, YGAlignCenter);
+    YGNodeStyleSetGap(meta, YGGutterColumn, 4);
+    YGNodeStyleSetFlexShrink(tr.text(meta, rng.range(6, 24)), 1);
+    YGNodeStyleSetFlexShrink(tr.text(meta, rng.range(10, 30)), 10);
+    YGNodeRef time = tr.text(meta, 2);
+    YGNodeStyleSetFlexShrink(time, 0);
+    addAlt(time, 2, 7.52f);
+
+    // A `flex: 1` wrapper in an auto-height column (basis 0, retainable).
+    YGNodeRef body = tr.node(content);
+    YGNodeStyleSetFlex(body, 1);
+    YGNodeRef postText = tr.text(body, 120);
+    addAlt(postText, 200, 7.5f);
+
+    // Three `flex: 1` texts sharing a row: widths on the 1/3-pt grid.
+    YGNodeRef tags = tr.node(content);
+    row(tags);
+    YGNodeStyleSetMargin(tags, YGEdgeTop, 4);
+    for (int k = 0; k < 3; k++) {
+      YGNodeStyleSetFlex(tr.text(tags, rng.range(4, 30), 13), 1);
+    }
+
+    // A card with sub-pixel padding: widths off the grid.
+    YGNodeRef card = tr.node(content);
+    YGNodeStyleSetMargin(card, YGEdgeTop, 8);
+    YGNodeStyleSetBorder(card, YGEdgeAll, 1);
+    YGNodeStyleSetPadding(card, YGEdgeAll, 12.1f);
+    YGNodeRef cardBody = tr.node(card);
+    YGNodeStyleSetFlex(cardBody, 1);
+    tr.text(cardBody, rng.range(20, 90), 15);
+    tr.text(cardBody, rng.range(40, 200), 13);
+
+    YGNodeRef actions = tr.node(content);
+    row(actions);
+    YGNodeStyleSetJustifyContent(actions, YGJustifySpaceBetween);
+    YGNodeStyleSetAlignItems(actions, YGAlignCenter);
+    YGNodeStyleSetMargin(actions, YGEdgeTop, 8);
+    YGNodeStyleSetPadding(actions, YGEdgeRight, 20);
+    YGNodeRef like = nullptr;
+    for (int b = 0; b < 3; b++) {
+      YGNodeRef btn = tr.node(actions);
+      row(btn);
+      YGNodeStyleSetAlignItems(btn, YGAlignCenter);
+      YGNodeStyleSetGap(btn, YGGutterColumn, 4);
+      YGNodeStyleSetPadding(btn, YGEdgeAll, 5);
+      tr.box(btn, 18, 18);
+      like = tr.text(btn, 1, 13);
+    }
+    addAlt(like, 2, 6.5f);
+    return {time, postText, like};
+  }
+
+  void setup() override {
+    gFabric = this;
+    t = std::make_unique<Tree>();
+    YGNodeRef content = rnScrollContent(*t);
+    std::vector<std::array<YGNodeRef, 3>> leaves;
+    for (int i = 0; i < cells; i++) {
+      leaves.push_back(buildCell(*t, content, i));
+    }
+    rnSetSurface(t->root, 390, 844);
+    // Every node gets its own config with the clone callback (as Fabric's
+    // do); from here the nodes are managed by this workload, not the Tree.
+    std::vector<YGNodeRef> stack{t->root};
+    while (!stack.empty()) {
+      YGNodeRef x = stack.back();
+      stack.pop_back();
+      adopt(x);
+      for (size_t i = 0; i < YGNodeGetChildCount(x); i++) {
+        stack.push_back(YGNodeGetChild(x, i));
+      }
+    }
+    for (YGConfigRef c : t->configs) {
+      YGConfigFree(c);
+    }
+    t->configs.clear();
+    r = t->root;
+    t->root = nullptr;
+    for (auto& l : leaves) {
+      paths.push_back({pathTo(l[0]), pathTo(l[1]), pathTo(l[2])});
+    }
+    YGNodeCalculateLayout(r, 390, 844, YGDirectionLTR);
+    rnLayout(r);
+    collect();
+  }
+
+  // One commit: clone the root-to-leaf path, edit the leaf, dirty it.
+  void prepare() override {
+    n++;
+    size_t cell = static_cast<size_t>((n / 3) % static_cast<uint64_t>(cells));
+    const std::vector<size_t>& path = paths[cell][n % 3];
+    std::vector<YGNodeRef> old{r};
+    for (size_t i : path) {
+      old.push_back(YGNodeGetChild(old.back(), i));
+    }
+    YGNodeRef leaf = cloneWithConfig(old.back());
+    YGNodeSetContext(
+        leaf, other.at(static_cast<Text*>(YGNodeGetContext(old.back()))));
+    YGNodeRef child = leaf;
+    for (size_t d = path.size(); d-- > 0;) {
+      YGNodeRef p = cloneWithConfig(old[d]);
+      YGNodeSwapChild(p, child, path[d]);
+      child = p;
+    }
+    r = child;
+    YGNodeMarkDirty(leaf);
+  }
+  void iter() override { YGNodeCalculateLayout(r, 390, 844, YGDirectionLTR); }
+  size_t after() override {
+    size_t count = rnLayout(r);
+    collect();
+    return count;
+  }
+
+  // Frees every node unreachable from the root that no reachable node names
+  // as its owner.
+  void collect() {
+    std::map<YGNodeRef, bool> keep;
+    std::vector<YGNodeRef> stack{r};
+    while (!stack.empty()) {
+      YGNodeRef x = stack.back();
+      stack.pop_back();
+      keep[x] = true;
+      for (size_t i = 0; i < YGNodeGetChildCount(x); i++) {
+        stack.push_back(YGNodeGetChild(x, i));
+      }
+    }
+    std::vector<YGNodeRef> owners;
+    for (auto& [x, _] : keep) {
+      if (YGNodeRef o = YGNodeGetOwner(x)) {
+        owners.push_back(o);
+      }
+    }
+    for (YGNodeRef o : owners) {
+      keep[o] = true;
+    }
+    std::vector<YGNodeRef> still;
+    for (YGNodeRef x : live) {
+      if (keep.count(x) != 0) {
+        still.push_back(x);
+      } else {
+        YGNodeFinalize(x);
+        YGConfigFree(configOf.at(x));
+        configOf.erase(x);
+      }
+    }
+    live.swap(still);
+  }
+  YGNodeRef root() override { return r; }
+  ~FabricCommit() override {
+    for (YGNodeRef x : live) {
+      YGNodeFinalize(x);
+      YGConfigFree(configOf.at(x));
+    }
+    gFabric = nullptr;
+  }
+};
+
+static YGNodeRef fabricCloneNode(YGNodeConstRef old, YGNodeConstRef, size_t) {
+  return gFabric->cloneWithConfig(old);
+}
+
 // --- Micro: C API costs -------------------------------------------------------
 
 struct MicroNodeNewFree : Workload {
@@ -983,6 +1246,8 @@ static void registerWorkloads() {
   add("rn/feed50/insert_remove", [] {
     return std::make_unique<FeedRelayout>(FeedRelayout::InsertRemove);
   });
+  // Fabric's commits: clone the root-to-leaf path, edit one text, relayout.
+  add("rn/fabric50/commit", [] { return std::make_unique<FabricCommit>(50); });
   // Depth scaling: measure calls grow geometrically with depth in this shape
   // (alternating row/column, shrinkable measured siblings).
   for (int d : {5, 10, 15, 20}) {
