@@ -356,14 +356,14 @@ impl Edges {
         }
     }
 
+    /// Bit `1 << unit` set for every unit among the nine values: whether
+    /// they are all undefined and whether any is a percentage, from one pass
+    /// (perf: the edge setters need both).
     #[inline]
-    fn all_undefined(&self) -> bool {
-        self.values.iter().all(|v| v.is_undefined())
-    }
-
-    #[inline]
-    fn any_percent(&self) -> bool {
-        self.values.iter().any(|v| v.is_percent())
+    fn units(&self) -> u8 {
+        self.values
+            .iter()
+            .fold(0, |units, v| units | (1 << v.unit as u8))
     }
 
     /// `Style::computeLeftEdge` / `computeTopEdge` / `computeRightEdge` /
@@ -374,6 +374,11 @@ impl Edges {
         self.values[index as usize]
     }
 }
+
+/// [`Edges::units`] of an `Edges` with every value undefined, and its bit
+/// for a percentage.
+const ONLY_UNDEFINED: u8 = 1 << Unit::Undefined as u8;
+const ANY_PERCENT: u8 = 1 << Unit::Percent as u8;
 
 const EDGES_MARGIN: u8 = 1;
 const EDGES_POSITION: u8 = 2;
@@ -694,8 +699,9 @@ impl Style {
     #[inline]
     pub fn set_margin(&mut self, edge: Edge, value: StyleLength) {
         self.margin.set(edge, value);
-        self.set_undefined_edges(EDGES_MARGIN, self.margin.all_undefined());
-        self.set_percent_input(PERCENT_MARGIN, self.margin.any_percent());
+        let units = self.margin.units();
+        self.set_undefined_edges(EDGES_MARGIN, units == ONLY_UNDEFINED);
+        self.set_percent_input(PERCENT_MARGIN, units & ANY_PERCENT != 0);
         self.refresh_margin_axis_sums(edge);
     }
     #[inline]
@@ -705,7 +711,7 @@ impl Style {
     #[inline]
     pub fn set_position(&mut self, edge: Edge, value: StyleLength) {
         self.position.set(edge, value);
-        self.set_undefined_edges(EDGES_POSITION, self.position.all_undefined());
+        self.set_undefined_edges(EDGES_POSITION, self.position.units() == ONLY_UNDEFINED);
     }
     #[inline]
     pub fn padding(&self, edge: Edge) -> StyleLength {
@@ -714,8 +720,9 @@ impl Style {
     #[inline]
     pub fn set_padding(&mut self, edge: Edge, value: StyleLength) {
         self.padding.set(edge, value);
-        self.set_undefined_edges(EDGES_PADDING, self.padding.all_undefined());
-        self.set_percent_input(PERCENT_PADDING, self.padding.any_percent());
+        let units = self.padding.units();
+        self.set_undefined_edges(EDGES_PADDING, units == ONLY_UNDEFINED);
+        self.set_percent_input(PERCENT_PADDING, units & ANY_PERCENT != 0);
         self.refresh_padding_border_axis_sums(edge);
     }
     #[inline]
@@ -725,8 +732,9 @@ impl Style {
     #[inline]
     pub fn set_border(&mut self, edge: Edge, value: StyleLength) {
         self.border.set(edge, value);
-        self.set_undefined_edges(EDGES_BORDER, self.border.all_undefined());
-        self.set_percent_input(PERCENT_BORDER, self.border.any_percent());
+        let units = self.border.units();
+        self.set_undefined_edges(EDGES_BORDER, units == ONLY_UNDEFINED);
+        self.set_percent_input(PERCENT_BORDER, units & ANY_PERCENT != 0);
         self.refresh_padding_border_axis_sums(edge);
     }
     #[inline]
@@ -766,11 +774,12 @@ impl Style {
 
     #[inline]
     fn update_percent_min_max(&mut self) {
-        let percent = self
-            .min_dimensions
-            .iter()
-            .chain(self.max_dimensions.iter())
-            .any(|v| v.is_percent());
+        let [min_width, min_height] = self.min_dimensions;
+        let [max_width, max_height] = self.max_dimensions;
+        let percent = min_width.is_percent()
+            | min_height.is_percent()
+            | max_width.is_percent()
+            | max_height.is_percent();
         self.set_percent_input(PERCENT_MIN_MAX, percent);
     }
 
