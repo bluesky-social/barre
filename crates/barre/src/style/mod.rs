@@ -420,7 +420,7 @@ pub struct Style {
     /// a different owner size (barre-only, derived; see
     /// [`Style::has_owner_relative_box`]).
     percent_inputs: u8,
-    /// barre-only, derived (see [`Style::refresh_axis_sums`]):
+    /// barre-only, derived (see [`Style::refresh_margin_axis_sums`]):
     /// `compute_margin_for_axis` for the row and column axes, valid when
     /// no margin is a percentage (it then needs no reference length).
     margin_axis_sum: [f32; 2],
@@ -571,19 +571,88 @@ impl Style {
         }
     }
 
-    /// barre-only: fills `margin_axis_sum` and `padding_border_axis_sum`
-    /// from the per-edge functions, so the fast paths return exactly what
-    /// those compute (same operations, same order). With no percentage the
-    /// reference length does not enter them, so 0 stands in for it.
-    fn refresh_axis_sums(&mut self) {
+    /// barre-only: fills `margin_axis_sum` from the margins, so the fast
+    /// path of [`Style::compute_margin_for_axis`] returns exactly what
+    /// `compute_margin_for_axis_slow` computes: the same per-edge operations
+    /// (`computeInlineStartMargin` + `computeInlineEndMargin` under LTR) in
+    /// the same order, written out for the row and column axes rather than
+    /// through the generic axis/direction mapping (perf: the setters run
+    /// this). With no percentage the reference length does not enter them,
+    /// so 0 stands in for it; while a margin is a percentage the sums are
+    /// not read, and the setter that removes the last one refreshes them.
+    #[inline]
+    fn refresh_margin_axis_sums(&mut self) {
+        if self.percent_inputs & PERCENT_MARGIN != 0 {
+            return;
+        }
+        let edge = |e: PhysicalEdge| or_zero(self.compute_margin(e, Direction::LTR).resolve(0.0));
+        self.margin_axis_sum = [
+            edge(PhysicalEdge::Left) + edge(PhysicalEdge::Right),
+            edge(PhysicalEdge::Top) + edge(PhysicalEdge::Bottom),
+        ];
+        #[cfg(debug_assertions)]
+        self.check_axis_sums();
+    }
+
+    /// barre-only: fills `padding_border_axis_sum` from the paddings and
+    /// borders, the same way as [`Style::refresh_margin_axis_sums`]
+    /// (`computeInlineStartPaddingAndBorder` +
+    /// `computeInlineEndPaddingAndBorder`, each padding + border). The
+    /// column axis's edges (top, bottom) resolve the same under every
+    /// direction, so its sum is computed once.
+    #[inline]
+    fn refresh_padding_border_axis_sums(&mut self) {
+        if self.percent_inputs & (PERCENT_PADDING | PERCENT_BORDER) != 0 {
+            return;
+        }
+        let edge = |e: PhysicalEdge, direction: Direction| {
+            max_or_defined(self.compute_padding(e, direction).resolve(0.0), 0.0)
+                + max_or_defined(self.compute_border(e, direction).resolve(0.0), 0.0)
+        };
+        let column =
+            edge(PhysicalEdge::Top, Direction::LTR) + edge(PhysicalEdge::Bottom, Direction::LTR);
+        self.padding_border_axis_sum = [
+            [
+                edge(PhysicalEdge::Left, Direction::Inherit)
+                    + edge(PhysicalEdge::Right, Direction::Inherit),
+                column,
+            ],
+            [
+                edge(PhysicalEdge::Left, Direction::LTR)
+                    + edge(PhysicalEdge::Right, Direction::LTR),
+                column,
+            ],
+            [
+                edge(PhysicalEdge::Right, Direction::RTL)
+                    + edge(PhysicalEdge::Left, Direction::RTL),
+                column,
+            ],
+        ];
+        #[cfg(debug_assertions)]
+        self.check_axis_sums();
+    }
+
+    /// Debug check of the two refreshes against the per-edge functions.
+    #[cfg(debug_assertions)]
+    fn check_axis_sums(&self) {
         for (i, axis) in [FlexDirection::Row, FlexDirection::Column]
             .into_iter()
             .enumerate()
         {
-            self.margin_axis_sum[i] = self.compute_margin_for_axis_slow(axis, 0.0);
-            for direction in [Direction::Inherit, Direction::LTR, Direction::RTL] {
-                self.padding_border_axis_sum[direction as usize][i] =
-                    self.compute_padding_and_border_for_axis_slow(axis, direction, 0.0);
+            if self.percent_inputs & PERCENT_MARGIN == 0 {
+                debug_assert_eq!(
+                    self.margin_axis_sum[i].to_bits(),
+                    self.compute_margin_for_axis_slow(axis, 0.0).to_bits()
+                );
+            }
+            if self.percent_inputs & (PERCENT_PADDING | PERCENT_BORDER) == 0 {
+                for direction in [Direction::Inherit, Direction::LTR, Direction::RTL] {
+                    debug_assert_eq!(
+                        self.padding_border_axis_sum[direction as usize][i].to_bits(),
+                        self.compute_padding_and_border_for_axis_slow(axis, direction, 0.0)
+                            .to_bits()
+                    );
+                }
             }
         }
     }
@@ -615,7 +684,7 @@ impl Style {
         self.margin.set(edge, value);
         self.set_undefined_edges(EDGES_MARGIN, self.margin.all_undefined());
         self.set_percent_input(PERCENT_MARGIN, self.margin.any_percent());
-        self.refresh_axis_sums();
+        self.refresh_margin_axis_sums();
     }
     #[inline]
     pub fn position(&self, edge: Edge) -> StyleLength {
@@ -635,7 +704,7 @@ impl Style {
         self.padding.set(edge, value);
         self.set_undefined_edges(EDGES_PADDING, self.padding.all_undefined());
         self.set_percent_input(PERCENT_PADDING, self.padding.any_percent());
-        self.refresh_axis_sums();
+        self.refresh_padding_border_axis_sums();
     }
     #[inline]
     pub fn border(&self, edge: Edge) -> StyleLength {
@@ -646,7 +715,7 @@ impl Style {
         self.border.set(edge, value);
         self.set_undefined_edges(EDGES_BORDER, self.border.all_undefined());
         self.set_percent_input(PERCENT_BORDER, self.border.any_percent());
-        self.refresh_axis_sums();
+        self.refresh_padding_border_axis_sums();
     }
     #[inline]
     pub fn gap(&self, gutter: Gutter) -> StyleLength {
