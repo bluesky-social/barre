@@ -212,6 +212,57 @@ node, item 3), and there is no cheap exact test for when a replay is a no-op
 (idea 1). The rest of the profile is Yoga-structured work and style lookups
 (`resolved_max_dimension`, `compute_margin`; idea 3).
 
+**Style setters vs the axis sums (branch `perf-fused-refresh`,
+2026-10-19).** `6806010` precomputes the per-axis margin and padding+border
+sums (`Style::margin_axis_sum`, `padding_border_axis_sum`; ~20% off `rn/`
+layouts) but refreshed all eight in every `set_margin`/`set_padding`/
+`set_border` through the generic per-edge functions, ~20 ns per edge
+setter: `micro/style_set_x20` 1.07× → 3.7× Yoga, `build_feed50_tree` 1.19×
+→ 1.28×. The sums stay eager (computed in the setter, so a layout pays
+nothing for them), but the setter now does only what the edge it set can
+change, in straight-line code. Commits, each measured `--rev` against the
+one before (`micro/`, interleaved, two runs):
+
+| commit | change | `style_set_x20` |
+|---|---|---|
+| `4afb7dd` | refresh only the set property's group (margin: 2 sums; padding/border: 4, the column one shared by the three directions), written out per axis | 194 → 95 ns |
+| `d651c40` | refresh only the axes the set edge maps to (left/right/start/end/horizontal: row; top/bottom/vertical: column; all: both); terms without the unit dispatch (`point_or_zero`: a stored point value is finite, a percentage counts as 0 because the sums are not read while one is set, and the setter that replaces it refreshes its axes); the row sum computed once when the three directions resolve the same edges | 95 → 69 ns |
+| `5020ee2` | one pass over an `Edges`' units for its undefined and percent bits; the min/max percent bit without an iterator chain | 69 → 68 ns |
+| `79bd80c` | `Edges::resolve` inlined into the setters | 68 → 66 ns |
+
+A calibration build with no refresh at all (not landable) measured 56 ns.
+Layout code is unchanged (the read side of the sums is untouched; every
+debug build checks each refreshed sum against the per-edge functions, which
+`./conf` and `./fuzz --debug` run). Result, `79bd80c` vs stack `9451558`,
+eight interleaved pairs (three full `bench/run`, five `rn/` + `micro/` runs,
+two of them with the order reversed), medians of the pairs' medians:
+
+| workload | stack | `79bd80c` | barre ns | barre/yoga |
+|---|---|---|---|---|
+| `micro/style_set_x20` | 198 ns (3.82×) | 66 ns (1.27×) | −67% | |
+| `micro/build_feed50_tree` | 166 µs (1.28×) | 154 µs (1.19×) | −7% | |
+| `rn/wide_row200/fresh` | 24.1 µs | 24.2 µs | +0.5% | 0.480 → 0.483 |
+| `rn/absolute100/fresh` | 128.0 µs | 127.4 µs | −0.3% | 0.510 → 0.505 |
+| `rn/feed50/fresh` | 690 µs | 692 µs | +0.4% | 0.439 → 0.441 |
+| `rn/deep20/fresh` (worst `fresh`) | 11.26 ms | 11.36 ms | +0.6% | 0.430 → 0.432 |
+| `rn/` geomean (19 rows) | | | +0.13% | 0.5019 → 0.5016 |
+
+Every `rn/` row is within ±1% (`rotate` +1.0% ns, +0.6% ratio), i.e. noise:
+barre's checksums, measure counts and new-layout counts are identical to
+stack, `./conf` 852/854 with 0 regressions, `./conf --engine rn-barre`
+identical to stack, `./fuzz run --seeds 10000` unchanged (2290 of 30000;
+545/1632/113). `barre-rn` snapshots styles through the same setters inside
+its layouts, so it gets the setter speedup there too.
+
+Tried before this (branch `perf-setters`, `ec44710`, not landed): setters
+only mark the sums stale and `YGNodeCalculateLayout` refreshes them in a
+walk over the flagged nodes. `style_set_x20` 1.15×, but each fresh layout
+paid ~5 ns per styled node: `rn/` geomean +1.1%, `wide_row200/fresh` +5.7%,
+`absolute100/fresh` +2.2%. Refreshing lazily on the algorithm's first visit
+(sums in `LayoutResults` cells, NaN as "stale") was considered and not
+built: it moves the same work into the timed layout, only fused, and the
+per-axis setter above already costs less than that walk.
+
 Perf commits (each `./conf` clean, checksums unchanged; numbers are
 `--quick` A/B against the previous commit):
 
