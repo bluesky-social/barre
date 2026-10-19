@@ -571,63 +571,75 @@ impl Style {
         }
     }
 
-    /// barre-only: fills `margin_axis_sum` from the margins, so the fast
-    /// path of [`Style::compute_margin_for_axis`] returns exactly what
-    /// `compute_margin_for_axis_slow` computes: the same per-edge operations
-    /// (`computeInlineStartMargin` + `computeInlineEndMargin` under LTR) in
-    /// the same order, written out for the row and column axes rather than
-    /// through the generic axis/direction mapping (perf: the setters run
-    /// this). With no percentage the reference length does not enter them,
-    /// so 0 stands in for it; while a margin is a percentage the sums are
-    /// not read, and the setter that removes the last one refreshes them.
+    /// barre-only: refreshes the `margin_axis_sum` entries of the axes
+    /// `edge` belongs to, after a margin on `edge` was set, so the fast path
+    /// of [`Style::compute_margin_for_axis`] returns exactly what
+    /// `compute_margin_for_axis_slow` computes: the same per-edge values
+    /// (`computeInlineStartMargin` + `computeInlineEndMargin` under LTR,
+    /// [`point_or_zero`]) added in the same order. An axis's sum depends
+    /// only on the edges that map to it, so the other axis's is still
+    /// current. A percentage counts as 0 here: the sums are not read while
+    /// any margin is a percentage, and the setter that replaces one
+    /// refreshes its axes (perf: the setters run this; refreshing every sum
+    /// through the generic per-edge functions cost ~20 ns per setter).
     #[inline]
-    fn refresh_margin_axis_sums(&mut self) {
-        if self.percent_inputs & PERCENT_MARGIN != 0 {
-            return;
+    fn refresh_margin_axis_sums(&mut self, edge: Edge) {
+        let (row, column) = edge_axes(edge);
+        let term = |e: PhysicalEdge| point_or_zero(self.margin.compute(e, Direction::LTR));
+        if row {
+            self.margin_axis_sum[0] = term(PhysicalEdge::Left) + term(PhysicalEdge::Right);
         }
-        let edge = |e: PhysicalEdge| or_zero(self.compute_margin(e, Direction::LTR).resolve(0.0));
-        self.margin_axis_sum = [
-            edge(PhysicalEdge::Left) + edge(PhysicalEdge::Right),
-            edge(PhysicalEdge::Top) + edge(PhysicalEdge::Bottom),
-        ];
+        if column {
+            self.margin_axis_sum[1] = term(PhysicalEdge::Top) + term(PhysicalEdge::Bottom);
+        }
         #[cfg(debug_assertions)]
         self.check_axis_sums();
     }
 
-    /// barre-only: fills `padding_border_axis_sum` from the paddings and
-    /// borders, the same way as [`Style::refresh_margin_axis_sums`]
-    /// (`computeInlineStartPaddingAndBorder` +
-    /// `computeInlineEndPaddingAndBorder`, each padding + border). The
-    /// column axis's edges (top, bottom) resolve the same under every
-    /// direction, so its sum is computed once.
+    /// barre-only: the same for `padding_border_axis_sum`, after a padding
+    /// or border on `edge` was set (`computeInlineStartPaddingAndBorder` +
+    /// `computeInlineEndPaddingAndBorder`, each padding + border, each
+    /// [`non_negative_point_or_zero`]). The column axis's edges resolve the
+    /// same under every direction, and so do the row axis's when no start
+    /// or end edge is set (then `resolved` is the same for every direction;
+    /// the sums are then equal because float addition commutes).
     #[inline]
-    fn refresh_padding_border_axis_sums(&mut self) {
-        if self.percent_inputs & (PERCENT_PADDING | PERCENT_BORDER) != 0 {
-            return;
-        }
-        let edge = |e: PhysicalEdge, direction: Direction| {
-            max_or_defined(self.compute_padding(e, direction).resolve(0.0), 0.0)
-                + max_or_defined(self.compute_border(e, direction).resolve(0.0), 0.0)
+    fn refresh_padding_border_axis_sums(&mut self, edge: Edge) {
+        let (row, column) = edge_axes(edge);
+        let term = |e: PhysicalEdge, direction: Direction| {
+            non_negative_point_or_zero(self.padding.compute(e, direction))
+                + non_negative_point_or_zero(self.border.compute(e, direction))
         };
-        let column =
-            edge(PhysicalEdge::Top, Direction::LTR) + edge(PhysicalEdge::Bottom, Direction::LTR);
-        self.padding_border_axis_sum = [
-            [
-                edge(PhysicalEdge::Left, Direction::Inherit)
-                    + edge(PhysicalEdge::Right, Direction::Inherit),
-                column,
-            ],
-            [
-                edge(PhysicalEdge::Left, Direction::LTR)
-                    + edge(PhysicalEdge::Right, Direction::LTR),
-                column,
-            ],
-            [
-                edge(PhysicalEdge::Right, Direction::RTL)
-                    + edge(PhysicalEdge::Left, Direction::RTL),
-                column,
-            ],
-        ];
+        if row {
+            let inherit = term(PhysicalEdge::Left, Direction::Inherit)
+                + term(PhysicalEdge::Right, Direction::Inherit);
+            let same = |d: Direction| {
+                self.padding.resolved[d as usize]
+                    == self.padding.resolved[Direction::Inherit as usize]
+                    && self.border.resolved[d as usize]
+                        == self.border.resolved[Direction::Inherit as usize]
+            };
+            let ltr = if same(Direction::LTR) {
+                inherit
+            } else {
+                term(PhysicalEdge::Left, Direction::LTR) + term(PhysicalEdge::Right, Direction::LTR)
+            };
+            let rtl = if same(Direction::RTL) {
+                inherit
+            } else {
+                term(PhysicalEdge::Right, Direction::RTL) + term(PhysicalEdge::Left, Direction::RTL)
+            };
+            self.padding_border_axis_sum[Direction::Inherit as usize][0] = inherit;
+            self.padding_border_axis_sum[Direction::LTR as usize][0] = ltr;
+            self.padding_border_axis_sum[Direction::RTL as usize][0] = rtl;
+        }
+        if column {
+            let sum = term(PhysicalEdge::Top, Direction::LTR)
+                + term(PhysicalEdge::Bottom, Direction::LTR);
+            for direction in [Direction::Inherit, Direction::LTR, Direction::RTL] {
+                self.padding_border_axis_sum[direction as usize][1] = sum;
+            }
+        }
         #[cfg(debug_assertions)]
         self.check_axis_sums();
     }
@@ -684,7 +696,7 @@ impl Style {
         self.margin.set(edge, value);
         self.set_undefined_edges(EDGES_MARGIN, self.margin.all_undefined());
         self.set_percent_input(PERCENT_MARGIN, self.margin.any_percent());
-        self.refresh_margin_axis_sums();
+        self.refresh_margin_axis_sums(edge);
     }
     #[inline]
     pub fn position(&self, edge: Edge) -> StyleLength {
@@ -704,7 +716,7 @@ impl Style {
         self.padding.set(edge, value);
         self.set_undefined_edges(EDGES_PADDING, self.padding.all_undefined());
         self.set_percent_input(PERCENT_PADDING, self.padding.any_percent());
-        self.refresh_padding_border_axis_sums();
+        self.refresh_padding_border_axis_sums(edge);
     }
     #[inline]
     pub fn border(&self, edge: Edge) -> StyleLength {
@@ -715,7 +727,7 @@ impl Style {
         self.border.set(edge, value);
         self.set_undefined_edges(EDGES_BORDER, self.border.all_undefined());
         self.set_percent_input(PERCENT_BORDER, self.border.any_percent());
-        self.refresh_padding_border_axis_sums();
+        self.refresh_padding_border_axis_sums(edge);
     }
     #[inline]
     pub fn gap(&self, gutter: Gutter) -> StyleLength {
@@ -1350,6 +1362,42 @@ impl PartialEq for Style {
 #[inline]
 fn or_zero(value: f32) -> f32 {
     if is_undefined(value) { 0.0 } else { value }
+}
+
+/// barre-only: `or_zero(length.resolve(0.0))` (what `computeInlineStartMargin`
+/// and friends compute with a zero reference length) for a length that is
+/// not a percentage, without the unit dispatch: a stored point value is
+/// finite (`StyleLength::points`), every other non-percent unit resolves to
+/// undefined. A percentage gives 0 rather than `value * 0 * 0.01`; the axis
+/// sums built from this are not read while a percentage is set.
+#[inline(always)]
+fn point_or_zero(length: StyleLength) -> f32 {
+    if length.unit == Unit::Point {
+        length.value
+    } else {
+        0.0
+    }
+}
+
+/// barre-only: `max_or_defined(length.resolve(0.0), 0.0)` (the padding and
+/// border terms) on the same terms as [`point_or_zero`]: with a defined
+/// value, `max_or_defined(a, 0)` is `a < 0 ? 0 : a`, as here.
+#[inline(always)]
+fn non_negative_point_or_zero(length: StyleLength) -> f32 {
+    let value = point_or_zero(length);
+    if value < 0.0 { 0.0 } else { value }
+}
+
+/// barre-only: whether a value on `edge` can enter the row and the column
+/// axis sums (start/end and the horizontal shorthand are row edges, the
+/// vertical shorthand a column edge, `all` both).
+#[inline(always)]
+fn edge_axes(edge: Edge) -> (bool, bool) {
+    match edge {
+        Edge::Left | Edge::Right | Edge::Start | Edge::End | Edge::Horizontal => (true, false),
+        Edge::Top | Edge::Bottom | Edge::Vertical => (false, true),
+        Edge::All => (true, true),
+    }
 }
 
 /// `Style::computeLeftEdge` / `computeTopEdge` / `computeRightEdge` /
